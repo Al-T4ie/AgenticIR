@@ -3,7 +3,7 @@
 #   cp .env.example .env && make up
 #
 # Ports are published to the host here for convenience. The Coolify stack in
-# infra/coolify/docker-compose.coolify.yml publishes nothing except through the
+# docker-compose.coolify.yml publishes nothing except through the
 # proxy — do not copy this file to production.
 
 name: agenticir
