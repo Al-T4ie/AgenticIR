@@ -183,11 +183,15 @@ services:
     image: docker.n8n.io/n8nio/n8n:latest
     environment:
       SERVICE_FQDN_N8N_5678: ${SERVICE_FQDN_N8N_5678}
+      # WEBHOOK_URL and N8N_EDITOR_BASE_URL take a full URL. N8N_HOST takes a
+      # bare hostname, and Coolify hands us a scheme-prefixed value — feeding it
+      # one made n8n unhealthy and, because the worker gated on
+      # `n8n: service_healthy`, failed the entire deployment. Behind a reverse
+      # proxy the two URL settings are sufficient, so N8N_HOST is left unset.
       WEBHOOK_URL: ${SERVICE_FQDN_N8N_5678}
       N8N_EDITOR_BASE_URL: ${SERVICE_FQDN_N8N_5678}
-      N8N_HOST: ${SERVICE_FQDN_N8N_5678}
-      N8N_PROTOCOL: https
       N8N_PORT: 5678
+      N8N_LISTEN_ADDRESS: 0.0.0.0
       N8N_TRUST_PROXY: "true"
       N8N_PROXY_HOPS: 1
 
@@ -226,10 +230,12 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz || exit 1"]
-      interval: 20s
+      interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 10
+      # n8n runs database migrations on a cold volume before it serves /healthz,
+      # which comfortably exceeds a 60s grace on first boot.
+      start_period: 180s
     restart: unless-stopped
     deploy:
       resources:
@@ -259,7 +265,16 @@ services:
     volumes:
       - n8n-data:/home/node/.n8n
     depends_on:
+      # Deliberately service_started, not service_healthy. Gating the worker on
+      # n8n's health makes a slow or unhealthy n8n fail the whole deployment,
+      # including the API — which does not depend on n8n at all. The worker
+      # retries its Redis and database connections on its own, so the only cost
+      # of starting early is a few reconnect attempts.
       n8n:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     deploy:
