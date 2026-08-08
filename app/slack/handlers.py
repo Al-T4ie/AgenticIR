@@ -92,6 +92,15 @@ async def _handle_mention(event: dict[str, Any]) -> None:
         await _handle_followup(existing, text, channel, thread_ts, user=user)
         return
 
+    # Not every mention is an alert. "@IR what did we conclude about FIN-WS-04?"
+    # asked in the channel used to spin up a fresh multi-agent investigation of
+    # the question itself; it should be answered from the incident it refers to.
+    target = await _question_about_existing(channel, text, user)
+    if target is not None:
+        log.info("slack.answering_from_record", incident_id=target["id"], user=user)
+        await answer_followup(target, text, channel, thread_ts)
+        return
+
     record = await runner.start_investigation(
         question=text,
         alert={"title": text[:200], "reported_by": user, "channel": channel, "raw": text},
@@ -101,6 +110,28 @@ async def _handle_mention(event: dict[str, Any]) -> None:
     )
     await notifier.acknowledge(channel, thread_ts, record["id"], record["title"])
     log.info("slack.investigation_started", incident_id=record["id"], user=user)
+
+
+async def _question_about_existing(channel: str, text: str, user: str) -> dict[str, Any] | None:
+    """The incident this mention is asking about, or None to investigate afresh."""
+    try:
+        from app.slack import poller
+
+        known = await poller._recent_incidents(channel)
+        if not known:
+            return None
+        dispositions = await poller.classify(
+            [{"ts": "mention", "user": user, "text": text, "thread_ts": "", "incident_id": ""}],
+            known,
+        )
+    except Exception as exc:  # noqa: BLE001 — fall through to investigating
+        log.warning("slack.mention_classification_failed", error=str(exc))
+        return None
+
+    decision = dispositions.get("mention")
+    if decision is None or decision.action != "answer":
+        return None
+    return next((i for i in known if i["id"] == decision.incident_id), None)
 
 
 async def _handle_followup(
@@ -214,7 +245,29 @@ async def answer_followup(
         log.error("slack.followup_failed", error=str(exc))
         answer = f"Couldn't answer that: {exc}"
 
-    await notifier.post(channel, text=answer, thread_ts=thread_ts)
+    # Show the question that was picked up alongside the answer. When the bot
+    # answers something nobody asked — the wrong message, or the wrong reading
+    # of the right one — that is only visible if the question is on the record
+    # next to the answer.
+    await notifier.post(
+        channel,
+        text=answer,
+        blocks_payload=[
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f":speech_balloon: answering *{incident['id']}* — "
+                        f"_{' '.join(text.split())[:250]}_",
+                    }
+                ],
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": answer[:2900]}},
+        ],
+        thread_ts=thread_ts,
+    )
+    log.info("slack.answered", incident_id=incident["id"], chars=len(answer))
 
 
 async def handle_interaction(payload: dict[str, Any]) -> None:
@@ -274,19 +327,14 @@ async def handle_slash_command(form: dict[str, str]) -> dict[str, Any]:
         }
 
     async def _start() -> None:
-        record = await runner.start_investigation(
+        # start_investigation opens the thread and acknowledges in it, so the
+        # run has somewhere to narrate from its first step.
+        await runner.start_investigation(
             question=text,
             alert={"title": text[:200], "reported_by": user, "raw": text},
             source="slack",
             slack_channel=channel,
         )
-        ts = await notifier.post(
-            channel,
-            text=f"Investigating: {record['title']}",
-            blocks_payload=blocks.acknowledgement(record["id"], record["title"]),
-        )
-        if ts:
-            await incidents.attach_slack_thread(record["id"], channel, ts)
 
     _spawn(_start())
     return {"response_type": "in_channel", "text": f":mag: Starting investigation: _{text[:150]}_"}
