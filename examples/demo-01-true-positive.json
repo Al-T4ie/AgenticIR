@@ -1,0 +1,41 @@
+{
+  "title": "Encoded PowerShell spawned by Outlook",
+  "rule_name": "EDR-WIN-0042: Office application spawning encoded PowerShell",
+  "severity": "high",
+  "detected_at": "2026-08-08T09:14:22Z",
+  "source_system": "CrowdStrike Falcon",
+  "host": {
+    "hostname": "FIN-WS-04",
+    "ip": "10.4.2.19",
+    "os": "Windows 11 23H2",
+    "department": "Finance",
+    "criticality": "medium"
+  },
+  "user": {
+    "username": "j.okafor",
+    "display_name": "J. Okafor",
+    "department": "Finance",
+    "privileged": false
+  },
+  "process": {
+    "parent": "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
+    "command_line": "powershell.exe -NoP -W Hidden -Enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA",
+    "hash_sha256": "9f2b8c1e4a7d3f6b0c5e8a1d4f7b2c9e6a3d0f5b8c1e4a7d2f9b6c3e0a5d8f1b",
+    "signed": true,
+    "integrity_level": "medium"
+  },
+  "network": {
+    "connections": [
+      {
+        "dst_ip": "198.51.100.77",
+        "dst_port": 443,
+        "domain": "cdn-update-service.top",
+        "bytes_out": 14822,
+        "bytes_in": 302911,
+        "protocol": "https"
+      }
+    ]
+  },
+  "detail": "Outlook spawned powershell.exe with an encoded command 90 seconds after the user opened an attachment named 'Invoice_Q3_Remittance.docm'. The process then made repeated outbound HTTPS connections to cdn-update-service.top at roughly 60 second intervals.",
+  "raw_events": 47
+}
