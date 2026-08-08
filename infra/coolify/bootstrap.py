@@ -32,7 +32,7 @@ from typing import Any
 DEFAULT_PROJECT = "agentic-ir"
 DEFAULT_ENVIRONMENT = "production"
 DEFAULT_RESOURCE = "agenticir-stack"
-DEFAULT_COMPOSE_PATH = "infra/coolify/docker-compose.coolify.yml"
+DEFAULT_COMPOSE_PATH = "docker-compose.coolify.yml"
 DEFAULT_BRANCH = "main"
 
 # Passed through to the Coolify resource when present in the caller's env.
@@ -330,46 +330,117 @@ def create_resource(
     return created
 
 
-def existing_env_keys(client: Coolify, resource_uuid: str) -> dict[str, str]:
+def env_rows(client: Coolify, resource_uuid: str) -> list[dict[str, Any]]:
     try:
         rows = unwrap(client.get(f"/applications/{resource_uuid}/envs", quiet=True))
     except urllib.error.HTTPError:
-        return {}
-    return {r["key"]: r.get("value", "") for r in rows if isinstance(r, dict) and r.get("key")}
+        return []
+    return [r for r in rows if isinstance(r, dict) and r.get("key")]
+
+
+def existing_env_keys(client: Coolify, resource_uuid: str) -> dict[str, str]:
+    """Effective value per key.
+
+    Coolify can hold more than one row for the same key — parsing a compose
+    file seeds non-runtime rows, and a later write adds a runtime one beside it.
+    The runtime row is what the container actually sees, so prefer it.
+    """
+    values: dict[str, str] = {}
+    for row in env_rows(client, resource_uuid):
+        key = row["key"]
+        if key not in values or row.get("is_runtime"):
+            values[key] = str(row.get("value", ""))
+    return values
+
+
+def prune_duplicate_env(client: Coolify, resource_uuid: str, desired: dict[str, str]) -> int:
+    """Remove shadow rows left behind when a write appends instead of updating.
+
+    Two rows for one key is not just untidy — which value reaches the container
+    is then a matter of ordering, so a correct-looking dashboard can still boot
+    the wrong configuration.
+    """
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for row in env_rows(client, resource_uuid):
+        by_key.setdefault(row["key"], []).append(row)
+
+    removed = 0
+    for key, want in desired.items():
+        rows = by_key.get(key, [])
+        if len(rows) < 2:
+            continue
+        keep = next((r for r in rows if str(r.get("value", "")) == want), None)
+        if keep is None:
+            continue
+        for row in rows:
+            if row.get("uuid") == keep.get("uuid"):
+                continue
+            try:
+                client.request(
+                    "DELETE", f"/applications/{resource_uuid}/envs/{row['uuid']}", quiet=True
+                )
+                removed += 1
+            except urllib.error.HTTPError as exc:
+                warn(f"could not remove duplicate {key} row: HTTP {exc.code}")
+    return removed
 
 
 def sync_env(client: Coolify, resource_uuid: str, desired: dict[str, str]) -> None:
+    """Write the desired environment onto the resource, then verify it stuck.
+
+    Coolify exposes a bulk upsert that handles create-or-update in one call.
+    Field naming differs across releases (`is_buildtime` vs `is_build_time`),
+    and a rejected field fails the whole request with a 422 — so we send the
+    minimal payload and fall back to per-key writes if bulk is unavailable.
+    """
     current = existing_env_keys(client, resource_uuid)
-    created = updated = skipped = 0
+    pending = {k: v for k, v in desired.items() if v != "" and current.get(k) != v}
+    if not pending:
+        ok("environment already matches")
+        return
 
-    for key, value in desired.items():
-        if value == "":
-            continue
-        if current.get(key) == value:
-            skipped += 1
-            continue
+    wrote = False
+    try:
+        client.patch(
+            f"/applications/{resource_uuid}/envs/bulk",
+            {"data": [{"key": k, "value": v} for k, v in pending.items()]},
+            quiet=True,
+        )
+        wrote = True
+    except urllib.error.HTTPError as exc:
+        warn(f"bulk env update unavailable (HTTP {exc.code}); falling back to per-key writes")
 
-        body = {
-            "key": key,
-            "value": value,
-            "is_preview": False,
-            "is_build_time": False,
-            "is_literal": False,
-        }
-        if key in current:
-            try:
-                client.patch(f"/applications/{resource_uuid}/envs", body, quiet=True)
-                updated += 1
-            except urllib.error.HTTPError as exc:
-                warn(f"could not update {key}: HTTP {exc.code}")
-        else:
-            try:
-                client.post(f"/applications/{resource_uuid}/envs", body, quiet=True)
-                created += 1
-            except urllib.error.HTTPError as exc:
-                warn(f"could not create {key}: HTTP {exc.code}")
+    if not wrote:
+        for key, value in pending.items():
+            body = {"key": key, "value": value, "is_preview": False, "is_literal": False}
+            for method, path in (
+                ("PATCH", f"/applications/{resource_uuid}/envs"),
+                ("POST", f"/applications/{resource_uuid}/envs"),
+            ):
+                try:
+                    client.request(method, path, body, quiet=True)
+                    break
+                except urllib.error.HTTPError:
+                    continue
+            else:
+                warn(f"could not write {key}")
 
-    ok(f"environment synced — {created} created, {updated} updated, {skipped} unchanged")
+    pruned = prune_duplicate_env(client, resource_uuid, desired)
+    if pruned:
+        ok(f"removed {pruned} shadowed duplicate row(s)")
+
+    # Verify rather than trust: a silently-dropped write leaves the stack running
+    # with the wrong provider or an empty API key, which fails much later and
+    # much more confusingly than an error here.
+    after = existing_env_keys(client, resource_uuid)
+    missed = [k for k, v in pending.items() if after.get(k) != v]
+    if missed:
+        die(
+            f"{len(missed)} environment variable(s) did not take: {', '.join(sorted(missed))}",
+            "Set them by hand in Coolify → resource → Environment Variables, then re-run "
+            "with --deploy-only.",
+        )
+    ok(f"environment synced — {len(pending)} written, {len(desired) - len(pending)} unchanged")
 
 
 def deploy(client: Coolify, resource_uuid: str, force: bool = False) -> str:
