@@ -284,8 +284,20 @@ on-call engineer.
 
 - **Slack-native start**: `@IR Bot investigate <paste an alert>` — findings come
   back in-thread.
+- **Watching it think** (the beat that lands): the thread narrates itself while
+  the run is in flight — round 1 dispatching `triage`, `enrichment` and
+  `behavioral` in parallel, each reporting back with its finding count and
+  elapsed time, the reviewer's verdict, then the containment plan. Roughly 15
+  messages over two minutes, all collapsed in one thread.
 - **Follow-up in thread**: reply `@IR Bot what was the C2 domain again?` — it
   answers from the incident record, not a fresh investigation.
+- **Changing its mind**: after a report lands, post the exculpatory fact into
+  the channel — *"FIN-WS-04 is our Jenkins agent, that PowerShell is the nightly
+  signing step"*. Within a sweep the bot folds it into the **same** incident and
+  posts a labelled revision to the original thread. In a live run this took the
+  severity from high to medium. Set `SLACK_POLL_INTERVAL_SECONDS=60` beforehand
+  so nobody watches a five-minute timer, or force it:
+  `curl -X POST -H "X-API-Key: $API_KEY" https://$APP_FQDN/v1/slack/poll`.
 - **Durability** (the strongest technical beat): while scenario 1 sits at the
   approval gate, restart the API in Coolify. Then approve. It resumes from the
   checkpoint. Nothing is held in memory.
@@ -312,6 +324,13 @@ Say these before someone else finds them:
   once beforehand and show the stored incident.
 - **Never demoed against production.** Everything here has run against fixtures.
   Do a dry run on simulated actions before pointing containment at a real EDR.
+- **The channel sweep reads your channel.** With `SLACK_POLL_ENABLED` the bot
+  sends messages from the channels it watches to the LLM provider in order to
+  classify them — not only the ones addressed to it. That is the feature, but it
+  is worth saying out loud in a room that assumes the bot only sees mentions.
+  Channel text is treated as untrusted: the classifier picks a disposition and
+  nothing else, invented incident ids are dropped, each sweep is capped by
+  `SLACK_POLL_MAX_ACTIONS`, and containment still needs a human.
 
 ---
 
