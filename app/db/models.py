@@ -46,6 +46,12 @@ class Incident(Base):
     # record, not only inside graph state.
     executed_actions: Mapped[list[Any]] = mapped_column(JSON, default=list)
     errors: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # What the investigation needs from a human and has not been told yet.
+    open_questions: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # Information that arrived while the incident could not absorb it — during a
+    # run, or under a pending approval. Applied when it next becomes idle, so
+    # intelligence is never rejected for arriving at an inconvenient moment.
+    pending_notes: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
     slack_channel: Mapped[str] = mapped_column(String(64), default="")
     slack_thread_ts: Mapped[str] = mapped_column(String(64), default="")
@@ -79,6 +85,8 @@ class Incident(Base):
             "containment_actions": self.containment_actions or [],
             "executed_actions": self.executed_actions or [],
             "errors": self.errors or [],
+            "open_questions": self.open_questions or [],
+            "pending_notes": self.pending_notes or [],
             "slack_channel": self.slack_channel,
             "slack_thread_ts": self.slack_thread_ts,
             "created_at": self.created_at.isoformat() if self.created_at else None,
