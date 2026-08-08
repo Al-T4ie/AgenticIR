@@ -1,0 +1,78 @@
+{
+  "name": "AgenticIR — SIEM alert intake",
+  "meta": {
+    "description": "Receives an alert from a SIEM/SOAR webhook, filters out noise, and starts an AgenticIR investigation. Import via n8n → Workflows → Import from file."
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agentic-ir/alert",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-intake",
+      "name": "SIEM webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-200, 300],
+      "webhookId": "agentic-ir-alert",
+      "notes": "Configure Header Auth credentials so only your SIEM can post here."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalise vendor-specific shapes into one alert object and drop noise\n// before it costs any LLM tokens.\nconst SEVERITY_FLOOR = ['low', 'medium', 'high', 'critical'];\nconst out = [];\n\nfor (const item of $input.all()) {\n  const b = item.json.body ?? item.json;\n\n  const severity = String(\n    b.severity ?? b.priority ?? b.risk_level ?? 'medium'\n  ).toLowerCase();\n\n  const alert = {\n    title: b.title ?? b.rule_name ?? b.name ?? b.signature ?? 'Untitled alert',\n    severity,\n    detected_at: b.detected_at ?? b.timestamp ?? new Date().toISOString(),\n    source_system: b.source_system ?? b.vendor ?? 'unknown',\n    host: b.host ?? { hostname: b.hostname, ip: b.src_ip ?? b.source_ip },\n    user: b.user ?? { username: b.username ?? b.user_name },\n    detail: b.detail ?? b.description ?? b.message ?? '',\n    raw: b,\n  };\n\n  // Suppress anything below the floor; tune this to your alert volume.\n  if (!SEVERITY_FLOOR.includes(severity)) continue;\n\n  out.push({ json: { alert, source: 'n8n', dedupe_key: `${alert.title}|${alert.host?.hostname ?? ''}` } });\n}\n\nreturn out;"
+      },
+      "id": "normalise",
+      "name": "Normalise & filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [20, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENTICIR_API_URL }}/v1/incidents",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{ $env.AGENTICIR_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ alert: $json.alert, source: 'n8n' }) }}",
+        "options": { "timeout": 30000, "response": { "response": { "neverError": false } } }
+      },
+      "id": "start-investigation",
+      "name": "Start investigation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, incident_id: $json.incident_id }) }}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [460, 300]
+    }
+  ],
+  "connections": {
+    "SIEM webhook": { "main": [[{ "node": "Normalise & filter", "type": "main", "index": 0 }]] },
+    "Normalise & filter": { "main": [[{ "node": "Start investigation", "type": "main", "index": 0 }]] },
+    "Start investigation": { "main": [[{ "node": "Acknowledge", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveExecutionProgress": true },
+  "pinData": {}
+}
