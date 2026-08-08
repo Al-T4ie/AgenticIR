@@ -330,6 +330,39 @@ def create_resource(
     return created
 
 
+def set_compose_domains(client: Coolify, resource_uuid: str, app_fqdn: str, n8n_fqdn: str) -> None:
+    """Attach the real hostnames to the compose services.
+
+    Setting SERVICE_FQDN_* as an environment variable is not enough: for a
+    compose resource Coolify drives its proxy from `docker_compose_domains`, and
+    left alone it keeps the sslip.io hostname it generated at creation. The
+    stack then deploys perfectly and simply is not reachable at your domain.
+
+    The port suffix selects which container port the hostname routes to.
+    """
+    entries = []
+    if app_fqdn:
+        entries.append({"name": "api", "domain": f"{_as_url(app_fqdn)}:8000"})
+    if n8n_fqdn:
+        entries.append({"name": "n8n", "domain": f"{_as_url(n8n_fqdn)}:5678"})
+    if not entries:
+        return
+
+    try:
+        client.patch(
+            f"/applications/{resource_uuid}",
+            {"docker_compose_domains": entries},
+            quiet=True,
+        )
+        ok("domains set: " + ", ".join(e["domain"] for e in entries))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode()[:300]
+        warn(
+            f"could not set service domains (HTTP {exc.code}): {detail}\n"
+            "  Set them by hand in Coolify → resource → the service's Domains field."
+        )
+
+
 def env_rows(client: Coolify, resource_uuid: str) -> list[dict[str, Any]]:
     try:
         rows = unwrap(client.get(f"/applications/{resource_uuid}/envs", quiet=True))
@@ -581,6 +614,9 @@ def main() -> int:
     resource_uuid = resource["uuid"]
 
     # ── Environment ──
+    step("Attaching domains")
+    set_compose_domains(client, resource_uuid, args.app_fqdn, args.n8n_fqdn)
+
     step("Syncing environment variables")
     desired: dict[str, str] = {}
 
