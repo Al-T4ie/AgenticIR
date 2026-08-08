@@ -103,6 +103,9 @@ class IncidentState(TypedDict, total=False):
     needs_more_work: bool
     critic_feedback: str
     status: str  # running | awaiting_approval | completed | failed
+    # Bumped each time new information reopens a closed incident, so the thread
+    # can say "revision 2" rather than silently replacing the first assessment.
+    revision: int
 
 
 def new_state(
@@ -140,4 +143,5 @@ def new_state(
         needs_more_work=True,
         critic_feedback="",
         status="running",
+        revision=0,
     )
