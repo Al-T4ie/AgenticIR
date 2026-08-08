@@ -26,6 +26,7 @@ def slack_on(monkeypatch: pytest.MonkeyPatch):
         slack_poll_max_actions=3,
         slack_poll_lookback_minutes=60,
         slack_poll_thread_window_hours=24,
+        slack_poll_report_decisions=True,
         polled_channels=["C_TEST"],
         slack_bot_token="xoxb-test",
     )
@@ -400,6 +401,113 @@ async def test_a_revision_is_labelled_even_when_it_stops_for_approval(monkeypatc
     said.clear()
     await runner._label_revision("INC-1", {"revision": 0})
     assert said == []
+
+
+# ── Multi-source intake ──────────────────────────────────────────────────────
+async def test_an_alert_with_a_channel_but_no_thread_opens_one(slack_on, monkeypatch):
+    """A SIEM alert routed to a channel has nowhere to narrate until a thread
+    exists, so it would go silent until the final report."""
+    from app.services import runner
+
+    monkeypatch.setattr(runner, "get_settings", lambda: slack_on)
+    monkeypatch.setattr(
+        runner.incidents,
+        "create_incident",
+        lambda **kw: _async(
+            {
+                "id": kw["incident_id"],
+                "thread_id": kw["thread_id"],
+                "title": "SIEM alert",
+                "slack_thread_ts": "",
+            }
+        ),
+    )
+    attached: list[tuple[str, str, str]] = []
+
+    async def fake_attach(incident_id, channel, ts):
+        attached.append((incident_id, channel, ts))
+
+    monkeypatch.setattr(runner.incidents, "attach_slack_thread", fake_attach)
+    monkeypatch.setattr(runner, "_spawn", lambda coro: coro.close())
+
+    from app.slack import notifier
+
+    monkeypatch.setattr(notifier, "acknowledge", lambda *a, **k: _async("1700000000.000900"))
+
+    record = await runner.start_investigation(
+        alert={"title": "SIEM alert"}, source="siem", slack_channel="C_TEST"
+    )
+
+    assert record["slack_thread_ts"] == "1700000000.000900"
+    assert attached and attached[0][1:] == ("C_TEST", "1700000000.000900")
+
+
+async def test_a_failed_acknowledgement_still_starts_the_run(slack_on, monkeypatch):
+    """Slack being down must degrade narration, not block the investigation."""
+    from app.services import runner
+
+    monkeypatch.setattr(runner, "get_settings", lambda: slack_on)
+    monkeypatch.setattr(
+        runner.incidents,
+        "create_incident",
+        lambda **kw: _async(
+            {
+                "id": kw["incident_id"],
+                "thread_id": kw["thread_id"],
+                "title": "t",
+                "slack_thread_ts": "",
+            }
+        ),
+    )
+    started: list[Any] = []
+    monkeypatch.setattr(runner, "_spawn", lambda coro: (coro.close(), started.append(1)))
+
+    from app.slack import notifier
+
+    async def boom(*a, **k):
+        raise RuntimeError("slack down")
+
+    monkeypatch.setattr(notifier, "acknowledge", boom)
+
+    record = await runner.start_investigation(alert={"title": "t"}, slack_channel="C_TEST")
+    assert record["slack_thread_ts"] == ""
+    assert started == [1]
+
+
+# ── Visibility ───────────────────────────────────────────────────────────────
+async def test_the_sweep_publishes_what_it_decided_and_why(slack_on, posted):
+    await poller._report_decisions(
+        "C_TEST",
+        [
+            {
+                "applied": "investigate",
+                "incident_id": "INC-9",
+                "user": "U1",
+                "text": "encoded powershell on FIN-WS-04",
+                "reason": "new alert, no existing incident",
+            },
+            {
+                "applied": "ignore",
+                "incident_id": "",
+                "user": "U2",
+                "text": "thanks!",
+                "reason": "acknowledgement",
+            },
+        ],
+    )
+
+    assert len(posted) == 1
+    body = posted[0]["text"]
+    assert "2 message(s) read" in body and "1 acted on" in body
+
+
+async def test_decision_reporting_can_be_switched_off(slack_on, posted):
+    slack_on.slack_poll_report_decisions = False
+    await poller._report_decisions(
+        "C_TEST",
+        [{"applied": "ignore", "incident_id": "", "user": "U", "text": "x", "reason": "y"}],
+    )
+    assert posted == []
 
 
 # ── Planning hygiene ─────────────────────────────────────────────────────────
