@@ -1,0 +1,173 @@
+"""The specialist worker. One instance runs per dispatched task, in parallel.
+
+Invoked via `Send`, so this node receives a purpose-built payload rather than the
+full incident state. It returns only additive keys, which is what makes the
+fan-out safe: concurrent specialists never contend for the same state slot.
+"""
+
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from pydantic import BaseModel, Field
+
+from app.graph import llm, prompts
+from app.graph.nodes.intake import now_iso
+from app.observability import NODE_DURATION, concise_error, get_logger
+from app.tools.builtin import builtin_tools
+from app.tools.n8n import n8n_tools
+
+log = get_logger(__name__)
+
+MAX_TOOL_ITERATIONS = 4
+
+_PROMPT_BY_SPECIALIST = {
+    "triage": prompts.TRIAGE,
+    "enrichment": prompts.ENRICHMENT,
+    "behavioral": prompts.BEHAVIORAL,
+}
+
+
+class SpecialistPayload(TypedDict):
+    """What `Send` hands to this node."""
+
+    incident_id: str
+    specialist: str
+    objective: str
+    alert_text: str
+    prior_findings: str
+    round: int
+
+
+class ReportedFinding(BaseModel):
+    title: str = Field(description="One-line summary of the finding")
+    detail: str = Field(description="What was observed and what it means")
+    severity: str = Field(
+        default="informational",
+        description="informational | low | medium | high | critical",
+    )
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    iocs: list[str] = Field(default_factory=list)
+    mitre_techniques: list[str] = Field(default_factory=list, description="e.g. T1059.001")
+    evidence: list[str] = Field(
+        default_factory=list, description="Specific observations backing this finding"
+    )
+
+
+class SpecialistReport(BaseModel):
+    findings: list[ReportedFinding] = Field(default_factory=list)
+    gaps: str = Field(default="", description="What could not be determined")
+
+
+def _tools() -> list:
+    return [*builtin_tools(), *n8n_tools()]
+
+
+async def _run_tool_loop(system: str, task: str, incident_id: str) -> list:
+    """Bounded ReAct loop. Returns the message history for the extraction step."""
+    tools = _tools()
+    messages: list = [SystemMessage(content=system), HumanMessage(content=task)]
+    if not tools:
+        return messages
+
+    model = llm.get_llm("specialist").bind_tools(tools)
+    by_name = {t.name: t for t in tools}
+
+    for iteration in range(MAX_TOOL_ITERATIONS):
+        try:
+            reply: AIMessage = await model.ainvoke(messages)
+        except Exception as exc:
+            log.warning("specialist.tool_loop_llm_failed", error=str(exc), iteration=iteration)
+            break
+
+        messages.append(reply)
+        calls = getattr(reply, "tool_calls", None) or []
+        if not calls:
+            break
+
+        for call in calls:
+            tool = by_name.get(call["name"])
+            if tool is None:
+                output = f"ERROR: unknown tool '{call['name']}'"
+            else:
+                args = dict(call.get("args") or {})
+                if "incident_id" in getattr(tool, "args", {}) and not args.get("incident_id"):
+                    args["incident_id"] = incident_id
+                try:
+                    output = str(await tool.ainvoke(args))
+                except Exception as exc:
+                    output = f"ERROR: tool raised {type(exc).__name__}: {exc}"
+            messages.append(ToolMessage(content=output[:8000], tool_call_id=call["id"]))
+
+    return messages
+
+
+async def specialist_node(payload: SpecialistPayload) -> dict[str, Any]:
+    name = payload["specialist"]
+    system = _PROMPT_BY_SPECIALIST.get(name, prompts.TRIAGE)
+    task = "\n".join(
+        [
+            f"OBJECTIVE: {payload['objective']}",
+            "",
+            "ALERT:",
+            payload["alert_text"][:6000],
+            "",
+            "FINDINGS FROM OTHER SPECIALISTS SO FAR:",
+            payload["prior_findings"][:4000],
+        ]
+    )
+
+    with NODE_DURATION.labels(node=f"specialist:{name}").time():
+        try:
+            history = await _run_tool_loop(system, task, payload["incident_id"])
+            history.append(
+                HumanMessage(
+                    content=(
+                        "Now report your findings as structured data. Include only conclusions "
+                        "your investigation actually supports. If you found nothing of note, "
+                        "return an empty findings list and explain why in `gaps`."
+                    )
+                )
+            )
+            report = await llm.structured("specialist", SpecialistReport, history)
+        except Exception as exc:
+            log.error("specialist.failed", specialist=name, error=str(exc))
+            return {
+                "errors": [f"{name}: {concise_error(exc)}"],
+                "timeline": [
+                    {
+                        "at": now_iso(),
+                        "actor": name,
+                        "event": f"Specialist failed: {concise_error(exc)}",
+                    }
+                ],
+            }
+
+    findings = [
+        {
+            "specialist": name,
+            "round": payload["round"],
+            **f.model_dump(),
+        }
+        for f in report.findings
+    ]
+
+    log.info(
+        "specialist.completed",
+        incident_id=payload["incident_id"],
+        specialist=name,
+        findings=len(findings),
+    )
+
+    return {
+        "findings": findings,
+        "timeline": [
+            {
+                "at": now_iso(),
+                "actor": name,
+                "event": f"Reported {len(findings)} finding(s)"
+                + (f"; gaps: {report.gaps[:200]}" if report.gaps else ""),
+            }
+        ],
+    }
