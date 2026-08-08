@@ -101,24 +101,27 @@ async def approve(incident_id: str, decision: ApprovalDecision) -> dict[str, Any
     return {"incident_id": incident_id, "status": "resuming"}
 
 
-@v1.post("/incidents/{incident_id}/follow-up", summary="Add information to an incident")
+@v1.post("/incidents/{incident_id}/follow-up", status_code=202, summary="Add information")
 async def follow_up(incident_id: str, payload: FollowUp) -> dict[str, Any]:
     """Fold new information into an incident and re-assess it.
 
     The re-run continues the same graph thread, so prior findings are kept and
-    the revised report lands in the original Slack thread.
+    the revised report lands in the original Slack thread. If the incident is
+    mid-run or awaiting a containment decision it cannot be re-entered yet; the
+    note is queued and applied the moment it goes idle. That is still an
+    acceptance — a 409 here told callers their telemetry had been rejected when
+    it had in fact been stored, which is the worst of both answers.
     """
     outcome = await runner.follow_up_investigation(
         incident_id, payload.note, reported_by=payload.reported_by
     )
     if outcome == "unknown":
         raise HTTPException(status_code=404, detail=f"Unknown incident {incident_id}")
-    if outcome != "revising":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Incident is {outcome.replace('_', ' ')}; it cannot absorb new information yet",
-        )
-    return {"incident_id": incident_id, "status": "revising"}
+    return {
+        "incident_id": incident_id,
+        "status": outcome,
+        "applied": outcome == "revising",
+    }
 
 
 @v1.post("/slack/poll", summary="Run a Slack channel sweep now")
