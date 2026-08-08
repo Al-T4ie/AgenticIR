@@ -216,12 +216,24 @@ async def answer_followup(
 
     from app.graph import llm
 
+    # The whole record, not a slice of it. "Give me the timeline" is a fair
+    # question that could not be answered while the timeline was the one field
+    # left out — and the failure mode is a confident answer from the parts that
+    # were supplied, rather than an admission that the data was missing.
     context = json.dumps(
         {
+            "id": incident.get("id"),
+            "status": incident.get("status"),
             "verdict": incident.get("verdict"),
             "severity": incident.get("severity"),
+            "confidence": incident.get("confidence"),
             "summary": incident.get("summary"),
-            "findings": incident.get("findings", [])[:20],
+            "timeline": incident.get("timeline", [])[-40:],
+            "findings": incident.get("findings", [])[:30],
+            "containment_actions": incident.get("containment_actions", []),
+            "executed_actions": incident.get("executed_actions", []),
+            "open_questions": incident.get("open_questions", []),
+            "errors": incident.get("errors", [])[-5:],
             "report": (incident.get("report") or "")[:6000],
         },
         default=str,
@@ -232,16 +244,19 @@ async def answer_followup(
             [
                 SystemMessage(
                     content=(
-                        "You are answering an analyst's follow-up about an investigation, "
-                        "mid-incident, in Slack. Answer only from the incident record "
-                        "supplied.\n\n"
-                        "At most three sentences. No preamble, no restating the question, "
-                        "no summary of the incident they already have. If the record does "
-                        "not contain the answer, say exactly that in one line and name the "
-                        "one thing that would settle it. Slack markdown."
+                        "You are answering an analyst mid-incident, in Slack, about an "
+                        "investigation that has already run. Answer only from the incident "
+                        "record supplied.\n\n"
+                        "At most three sentences — unless they asked for a timeline, a "
+                        "sequence or a list, in which case give exactly that as compact "
+                        "bullets, newest last, one line each.\n\n"
+                        "No preamble, no restating the question, no summary of the incident "
+                        "they already have. If the record does not contain the answer, say "
+                        "so in one line and name the one thing that would settle it. Never "
+                        "infer events that are not in the record. Slack markdown."
                     )
                 ),
-                HumanMessage(content=f"INCIDENT RECORD:\n{context}\n\nQUESTION: {text}"),
+                HumanMessage(content=f"INCIDENT RECORD:\n{context}\n\nASKED: {text}"),
             ],
         )
     except Exception as exc:
