@@ -118,7 +118,71 @@
 
 <div class="panel">
   <h2>Timeline</h2>
-  <ul class="timeline">
+
+  {% if not chart.empty %}
+  {# LEFT is the label gutter. "containment planner" is the longest lane name
+     the graph produces and it needs every pixel of this. #}
+  {% set ROW = 30 %}{% set TOP = 26 %}{% set LEFT = 158 %}{% set W = 1000 %}
+  {% set H = TOP + chart.lanes|length * ROW + 30 %}
+  <div class="chart-wrap">
+    <svg class="gantt" viewBox="0 0 {{ LEFT + W + 16 }} {{ H }}" role="img"
+         aria-label="Investigation timeline, {{ '%.0f'|format(chart.total) }} seconds across {{ chart.lanes|length }} agents">
+
+      <!-- Run bands: a second intake means the incident was reopened. -->
+      {% for r in chart.runs %}
+        {% set rx = LEFT + (r.start / chart.total) * W %}
+        {% set rw = ((r.end - r.start) / chart.total) * W %}
+        {% if not loop.first %}
+          <rect x="{{ rx }}" y="6" width="{{ rw }}" height="{{ H - 12 }}" class="run-band"/>
+          <line x1="{{ rx }}" y1="6" x2="{{ rx }}" y2="{{ H - 20 }}" class="run-edge"/>
+        {% endif %}
+        <text x="{{ rx + 4 }}" y="16" class="run-label">{{ r.label }}</text>
+      {% endfor %}
+
+      <!-- Time axis -->
+      {% for t in chart.ticks %}
+        {% set tx = LEFT + (t.at / chart.total) * W %}
+        <line x1="{{ tx }}" y1="{{ TOP - 6 }}" x2="{{ tx }}" y2="{{ H - 22 }}" class="grid-line"/>
+        <text x="{{ tx }}" y="{{ H - 8 }}" class="tick" text-anchor="middle">{{ t.label }}</text>
+      {% endfor %}
+
+      {% for lane in chart.lanes %}
+        {% set y = TOP + loop.index0 * ROW %}
+        <text x="{{ LEFT - 10 }}" y="{{ y + 15 }}" class="lane-label" text-anchor="end">{{ lane.actor }}</text>
+        <line x1="{{ LEFT }}" y1="{{ y + 11 }}" x2="{{ LEFT + W }}" y2="{{ y + 11 }}" class="lane-rule"/>
+
+        {% for s in lane.spans %}
+          {% set sx = LEFT + (s.start / chart.total) * W %}
+          {% set sw = [((s.end - s.start) / chart.total) * W, 3]|max %}
+          <rect x="{{ sx }}" y="{{ y + 3 }}" width="{{ sw }}" height="16" rx="3"
+                class="span k-{{ lane.kind }}{% if s.failed %} failed{% endif %}{% if s.open %} open{% endif %}">
+            <title>{{ lane.actor }} · round {{ s.round }} · {{ '%.0f'|format(s.end - s.start) }}s{% if s.failed %} · failed{% endif %}</title>
+          </rect>
+          {% if sw > 34 %}
+            <text x="{{ sx + 5 }}" y="{{ y + 15 }}" class="span-text">{{ '%.0f'|format(s.end - s.start) }}s</text>
+          {% endif %}
+        {% endfor %}
+
+        {% for m in lane.marks %}
+          {% set mx = LEFT + (m.at / chart.total) * W %}
+          <circle cx="{{ mx }}" cy="{{ y + 11 }}" r="5" class="mark k-{{ lane.kind }}">
+            <title>{{ m.label }}</title>
+          </circle>
+        {% endfor %}
+      {% endfor %}
+    </svg>
+  </div>
+  <div class="row muted" style="font-size:12px; margin-top:10px">
+    <span><i class="key k-plan"></i> plan</span>
+    <span><i class="key k-work"></i> specialist</span>
+    <span><i class="key k-review"></i> review</span>
+    <span><i class="key k-action"></i> containment</span>
+    <span><i class="key k-human"></i> human</span>
+    <span class="mono">total {{ '%.0f'|format(chart.total) }}s · hover for detail</span>
+  </div>
+  {% endif %}
+
+  <ul class="timeline" style="margin-top:16px">
     {% for t in incident.timeline %}
       <li><span class="muted mono">{{ (t.at or '')[11:19] }}</span> <b>{{ t.actor }}</b> — {{ t.event }}</li>
     {% else %}
