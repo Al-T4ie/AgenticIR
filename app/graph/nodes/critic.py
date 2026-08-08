@@ -13,6 +13,7 @@ from app.graph import llm, prompts
 from app.graph.nodes.intake import now_iso
 from app.graph.state import IncidentState
 from app.observability import concise_error, get_logger
+from app.slack import progress
 from app.tools.builtin import alert_to_text
 
 log = get_logger(__name__)
@@ -101,6 +102,13 @@ async def critic_node(state: IncidentState) -> dict[str, Any]:
         severity=severity,
         needs_more_work=needs_more,
         round=current_round,
+    )
+    await progress.reviewed(
+        str(state.get("incident_id", "")),
+        review.verdict,
+        severity,
+        needs_more,
+        review.feedback,
     )
 
     return {
