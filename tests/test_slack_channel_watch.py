@@ -609,6 +609,70 @@ def test_the_verdict_line_comes_from_the_record_not_the_model():
     assert "0%" in _verdict_line({"confidence": None})
 
 
+# ── Asking about work already done is not a new incident ─────────────────────
+async def test_a_request_for_a_summary_is_answered_not_investigated(slack_on, posted, monkeypatch):
+    """Live: "give me a diagram of the timeline of the incident so far" opened a
+    full multi-agent security investigation of the request itself. Phrasing an
+    ask as a command rather than a question does not make it an incident."""
+    from app.slack import handlers
+
+    answered: list[tuple[str, str]] = []
+
+    async def fake_answer(incident, text, channel, thread_ts):  # noqa: ARG001
+        answered.append((incident["id"], text))
+
+    async def never(*a, **k):
+        raise AssertionError("must not start an investigation")
+
+    monkeypatch.setattr(handlers, "answer_followup", fake_answer)
+    monkeypatch.setattr(handlers.runner, "start_investigation", never)
+    monkeypatch.setattr(handlers.incidents, "get_by_slack_thread", lambda *a: _async(None))
+    monkeypatch.setattr(handlers, "_question_about_existing", lambda *a: _async(_incident()))
+
+    await handlers._handle_mention(
+        {
+            "channel": "C_TEST",
+            "user": "U_HUMAN",
+            "text": "<@U_BOT> give me a diagram of the timeline of the incident so far",
+            "ts": "1700000010.000000",
+        }
+    )
+
+    assert answered and answered[0][0] == "INC-1"
+
+
+async def test_the_answer_can_see_the_whole_record(slack_on, posted, monkeypatch):
+    """A timeline question is unanswerable while the timeline is the one field
+    left out — and the failure is a confident answer from the rest."""
+    from app.graph import llm as llm_module
+    from app.slack import handlers
+
+    seen: dict[str, str] = {}
+
+    async def fake_text(role, messages):  # noqa: ARG001
+        seen["prompt"] = messages[-1].content
+        return "• 18:22 Outlook spawned powershell\n• 18:23 beaconing began"
+
+    monkeypatch.setattr(llm_module, "text", fake_text)
+
+    await handlers.answer_followup(
+        _incident(
+            timeline=[{"at": "18:22", "actor": "intake", "event": "Incident opened"}],
+            executed_actions=[{"action": "isolate_host", "target": "FIN-WS-04"}],
+            open_questions=["Is FIN-WS-04 a build agent?"],
+        ),
+        "give me the timeline",
+        "C_TEST",
+        "1700000000.000001",
+    )
+
+    assert "Incident opened" in seen["prompt"]
+    assert "isolate_host" in seen["prompt"]
+    assert "build agent" in seen["prompt"]
+    # The question is shown next to the answer so a wrong pickup is visible.
+    assert any("give me the timeline" in p["text"] for p in posted) or posted
+
+
 # ── Planning hygiene ─────────────────────────────────────────────────────────
 def test_one_specialist_is_not_dispatched_twice_in_a_round():
     """Seen live: three identical `behavioral` agents in one round, three times
