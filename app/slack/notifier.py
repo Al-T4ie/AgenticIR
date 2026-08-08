@@ -46,6 +46,24 @@ async def post(
         return ""
 
 
+async def update(
+    channel: str,
+    ts: str,
+    *,
+    text: str,
+    blocks_payload: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Rewrite a message in place. False on failure — callers degrade, never fail."""
+    try:
+        await get_client().chat_update(
+            channel=channel, ts=ts, text=text[:3000], blocks=blocks_payload
+        )
+        return True
+    except Exception as exc:
+        log.warning("slack.update_failed", channel=channel, ts=ts, error=str(exc))
+        return False
+
+
 async def notify_incident(incident_id: str, event: str, interrupt: Any = None) -> None:
     """Report a run transition into the incident's Slack thread."""
     settings = get_settings()
