@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from typing import Any, Literal, TypeVar
 
@@ -123,6 +124,23 @@ async def structured(
         LLM_CALLS.labels(role=role, outcome="error").inc()
         log.error("llm.structured_failed", role=role, schema=schema.__name__, error=str(exc))
         raise
+
+
+def coerce_json_list(value: Any) -> Any:
+    """Accept a JSON-encoded list where a list was requested.
+
+    Observed in production against OpenRouter: a model returned `findings` as a
+    JSON *string* rather than an array, and pydantic rejected the whole report —
+    losing an entire specialist's work over a formatting quirk. Providers differ
+    here, so parse leniently and let validation judge the parsed content.
+    """
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        return parsed if isinstance(parsed, list) else value
+    return value
 
 
 async def text(role: Role, messages: list[BaseMessage]) -> str:
