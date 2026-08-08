@@ -314,6 +314,7 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
 
     dispositions = await classify(mine, known)
     counts: dict[str, int] = {}
+    decisions: list[dict[str, str]] = []
     actions = 0
 
     for candidate in mine:
@@ -337,10 +338,66 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
 
         counts[applied] = counts.get(applied, 0) + 1
         POLL_MESSAGES.labels(disposition=applied).inc()
+        decisions.append(
+            {
+                "applied": applied,
+                "incident_id": incident_id,
+                "user": candidate["user"],
+                "text": candidate["text"],
+                "reason": decision.reason if decision else "not classified",
+            }
+        )
         if applied not in {"ignore", "queued"}:
             actions += 1
 
+    await _report_decisions(channel, decisions)
     return {"candidates": len(mine), "actions": actions, "dispositions": counts}
+
+
+_ACTED = {"investigate", "update_incident", "answer", "blocked_on_approval", "queued"}
+
+
+async def _report_decisions(channel: str, decisions: list[dict[str, str]]) -> None:
+    """Post what the sweep read and what it decided.
+
+    The classifier's judgement is the part of this system most likely to be
+    wrong, and it is invisible: a message quietly ignored looks identical to a
+    message never seen. Publishing each decision with its reason is what makes
+    the behaviour reviewable — and correctable, since the reasons say plainly
+    what the model thought it was looking at.
+    """
+    if not decisions or not get_settings().slack_poll_report_decisions:
+        return
+
+    lines = []
+    for d in decisions:
+        quoted = " ".join(d["text"].split())[:110]
+        target = f" → `{d['incident_id']}`" if d["incident_id"] else ""
+        lines.append(
+            f"• *{d['applied']}*{target} — _{d['reason'][:140] or 'no reason given'}_\n"
+            f"   <@{d['user']}>: “{quoted}”"
+        )
+
+    acted = sum(1 for d in decisions if d["applied"] in _ACTED)
+    from app.slack import notifier
+
+    await notifier.post(
+        channel,
+        text=f"Channel sweep: {len(decisions)} message(s) read, {acted} acted on",
+        blocks_payload=[
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f":mag_right: *Channel sweep* — {len(decisions)} message(s) "
+                        f"read, {acted} acted on",
+                    }
+                ],
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)[:2900]}},
+        ],
+    )
 
 
 async def _refetch(channel: str, ts: str, known: list[dict[str, Any]]) -> dict[str, Any] | None:
