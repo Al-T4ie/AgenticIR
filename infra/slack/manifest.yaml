@@ -8,8 +8,10 @@
 #   4. Set SLACK_ENABLED=true and redeploy.
 #   5. Invite the bot: /invite @IR Bot in #incident-response
 #
-# Scopes are deliberately minimal: the bot reads only messages that mention it,
-# and writes only to channels it has been invited to.
+# Scopes cover two modes. Mentions and DMs arrive over the Events API. With
+# SLACK_POLL_ENABLED the bot also sweeps its channels every few minutes and
+# reads the surrounding conversation, so it can notice information that bears on
+# an incident it already reported. It only ever reads channels it was invited to.
 
 display_information:
   name: AgenticIR
@@ -38,8 +40,10 @@ oauth_config:
     bot:
       - app_mentions:read # see mentions of the bot
       - chat:write # post findings and approval prompts
-      - channels:history # read thread context in public channels
+      - channels:history # read channel + thread context in public channels
       - groups:history # ...and private channels it is invited to
+      - channels:read # resolve #incident-response to a channel id
+      - groups:read # ...for private channels
       - im:history # direct messages
       - im:write # reply in DMs
       - commands # /ir
