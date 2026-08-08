@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}{{ incident.id }} — AgenticIR{% endblock %}
+{% block content %}
+
+<div class="row" style="justify-content:space-between; margin-bottom:16px">
+  <div>
+    <h1 style="margin-bottom:6px">{{ incident.title }}</h1>
+    <div class="muted mono">{{ incident.id }} · {{ incident.source }} · opened {{ (incident.created_at or '')[:19].replace('T',' ') }}</div>
+  </div>
+  <div class="row">
+    <span class="pill sev-{{ incident.severity }}">{{ incident.severity }}</span>
+    <span class="st-{{ incident.status }}">{{ incident.status.replace('_',' ') }}</span>
+  </div>
+</div>
+
+{% if incident.status == 'running' %}
+<div class="banner">
+  <b>Investigation in progress.</b> Agents are working — this page does not auto-refresh.
+  <a href="">Reload</a>
+</div>
+{% endif %}
+
+{% if can_approve %}
+<div class="banner approve">
+  <b>Containment approval required.</b> {{ pending_actions|length }} action(s) are waiting on a human decision.
+  <div style="margin-top:12px">
+    {% for a in pending_actions %}
+      <div class="finding {{ incident.severity }}">
+        <b>{{ a.action }}</b> → <span class="mono">{{ a.target }}</span>
+        <div class="muted" style="margin-top:4px">{{ a.justification }}</div>
+        <div style="margin-top:6px">
+          <span class="tag">risk: {{ a.risk }}</span>
+          <span class="tag">{{ 'reversible' if a.reversible else 'NOT reversible' }}</span>
+          {% if a.tool %}<span class="tag">via {{ a.tool }}</span>{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+  <form method="post" action="/ui/incidents/{{ incident.id }}/decide" style="margin-top:14px">
+    <input type="text" name="note" placeholder="Optional note for the audit record" style="margin-bottom:10px">
+    <div class="row">
+      <button type="submit" name="decision" value="approve">Approve all</button>
+      <button class="danger" type="submit" name="decision" value="reject">Reject all</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% if incident.errors %}
+<div class="banner error">
+  <b>Errors during investigation</b>
+  <ul style="margin:8px 0 0">{% for e in incident.errors %}<li class="mono">{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Verdict</h2>
+  <div class="row" style="margin-bottom:10px">
+    <span class="pill sev-{{ incident.severity }}">{{ incident.severity }}</span>
+    <b>{{ incident.verdict.replace('_',' ')|title }}</b>
+    <span class="muted">confidence {{ '%.0f'|format((incident.confidence or 0) * 100) }}%</span>
+  </div>
+  <p style="margin:0">{{ incident.summary or 'No summary available yet.' }}</p>
+</div>
+
+{% if incident.report %}
+<div class="panel">
+  <h2>Report</h2>
+  <pre class="report">{{ incident.report }}</pre>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Findings ({{ incident.findings|length }})</h2>
+  {% for f in incident.findings %}
+    <div class="finding {{ f.severity }}">
+      <div class="row" style="justify-content:space-between">
+        <b>{{ f.title }}</b>
+        <span class="muted mono">{{ f.specialist }} · r{{ f.round }} · {{ '%.0f'|format((f.confidence or 0) * 100) }}%</span>
+      </div>
+      <div style="margin-top:6px">{{ f.detail }}</div>
+      {% if f.evidence %}
+        <div class="muted" style="margin-top:8px"><b>Evidence:</b>
+          <ul style="margin:4px 0">{% for e in f.evidence %}<li>{{ e }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      <div style="margin-top:6px">
+        {% for t in f.mitre_techniques %}<span class="tag">{{ t }}</span>{% endfor %}
+        {% for i in f.iocs %}<span class="tag mono">{{ i }}</span>{% endfor %}
+      </div>
+    </div>
+  {% else %}
+    <p class="muted">No findings recorded.</p>
+  {% endfor %}
+</div>
+
+{% if incident.containment_actions %}
+<div class="panel">
+  <h2>Containment actions</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Action</th><th>Target</th><th>Risk</th><th>Reversible</th><th>Approval</th></tr></thead>
+      <tbody>
+      {% for a in incident.containment_actions %}
+        <tr>
+          <td><b>{{ a.action }}</b><div class="muted">{{ a.justification }}</div></td>
+          <td class="mono">{{ a.target }}</td>
+          <td>{{ a.risk }}</td>
+          <td>{{ 'yes' if a.reversible else 'no' }}</td>
+          <td>{{ 'required' if a.requires_approval else 'auto' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Timeline</h2>
+  <ul class="timeline">
+    {% for t in incident.timeline %}
+      <li><span class="muted mono">{{ (t.at or '')[11:19] }}</span> <b>{{ t.actor }}</b> — {{ t.event }}</li>
+    {% else %}
+      <li class="muted">No timeline entries.</li>
+    {% endfor %}
+  </ul>
+</div>
+
+<p><a href="/ui">← All incidents</a></p>
+{% endblock %}
