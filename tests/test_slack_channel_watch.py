@@ -594,6 +594,21 @@ async def test_questions_are_asked_once_not_every_round(monkeypatch):
     assert asked == [["Was there a deploy tonight?"]]
 
 
+# ── The report never contradicts the record ──────────────────────────────────
+def test_the_verdict_line_comes_from_the_record_not_the_model():
+    """A live run headed a report "Likely malicious · high · 80%" on an incident
+    recorded `inconclusive`. Whichever reading was right, a report that
+    contradicts the field the dashboard and the audit trail use is worse."""
+    from app.graph.nodes.report import _verdict_line
+
+    line = _verdict_line({"verdict": "true_positive", "severity": "critical", "confidence": 0.8})
+    assert line == "*true positive · critical · 80% confidence*"
+
+    # Missing values must not produce a broken header.
+    assert _verdict_line({}) == "*inconclusive · informational · 0% confidence*"
+    assert "0%" in _verdict_line({"confidence": None})
+
+
 # ── Planning hygiene ─────────────────────────────────────────────────────────
 def test_one_specialist_is_not_dispatched_twice_in_a_round():
     """Seen live: three identical `behavioral` agents in one round, three times
