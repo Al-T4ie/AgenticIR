@@ -59,10 +59,33 @@ class ReportedFinding(BaseModel):
 
 
 class SpecialistReport(BaseModel):
-    findings: list[ReportedFinding] = Field(default_factory=list)
-    gaps: str = Field(default="", description="What could not be determined")
+    findings: list[ReportedFinding] = Field(
+        default_factory=list, description="At most 4. Fewer is better. Empty is valid."
+    )
+    gaps: str = Field(default="", description="One line: what could not be determined")
 
     _coerce = field_validator("findings", mode="before")(coerce_json_list)
+
+
+# One alert does not contain seven separate conclusions. Left uncapped, each
+# round produced more findings than the last — 2 then 5 then 7 from the same
+# specialist on the same alert — and the reviewer, whose job is to find claims
+# the evidence does not support, correctly downgraded a true positive to
+# inconclusive as the padding accumulated. More work made the verdict worse.
+MAX_FINDINGS_PER_SPECIALIST = 4
+
+
+def _best(findings: list[ReportedFinding]) -> list[ReportedFinding]:
+    """Keep the findings that carry the most signal, drop the padding."""
+    if len(findings) <= MAX_FINDINGS_PER_SPECIALIST:
+        return findings
+    order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "informational": 0}
+    ranked = sorted(
+        findings,
+        key=lambda f: (order.get(str(f.severity).lower(), 0), f.confidence),
+        reverse=True,
+    )
+    return ranked[:MAX_FINDINGS_PER_SPECIALIST]
 
 
 def _tools() -> list:
@@ -157,13 +180,21 @@ async def specialist_node(payload: SpecialistPayload) -> dict[str, Any]:
         finally:
             ACTIVE_SPECIALISTS.labels(specialist=name).dec()
 
+    kept = _best(report.findings)
+    if len(kept) < len(report.findings):
+        log.info(
+            "specialist.findings_capped",
+            specialist=name,
+            reported=len(report.findings),
+            kept=len(kept),
+        )
     findings = [
         {
             "specialist": name,
             "round": payload["round"],
             **f.model_dump(),
         }
-        for f in report.findings
+        for f in kept
     ]
 
     elapsed = time.monotonic() - started
