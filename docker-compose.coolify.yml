@@ -118,13 +118,13 @@ services:
       POSTGRES_DB: agenticir
       POSTGRES_USER: agenticir
       POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES}
-      POSTGRES_MULTIPLE_DATABASES: n8n
       # Postgres refuses to initialise a non-empty directory, so keep PGDATA in
       # a subdirectory of the mount point.
       PGDATA: /var/lib/postgresql/data/pgdata
+      # The n8n database is created by the postgres-init service below, not by
+      # an entrypoint script — see the comment there.
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agenticir -d agenticir"]
       interval: 10s
@@ -153,6 +153,35 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
+
+  # ── One-shot database bootstrap ──────────────────────────────────────────
+  # Creates the n8n database and enables pgvector.
+  #
+  # This was originally a script mounted into /docker-entrypoint-initdb.d.
+  # That does not survive Coolify: a relative host bind from the repo is not
+  # mounted, so the directory arrived empty, no database was created, and n8n
+  # crash-looped on `database "n8n" does not exist` — while the deployment
+  # reported success. Postgres also only runs those scripts on a *fresh* data
+  # directory, so the mechanism silently does nothing on any existing volume.
+  # An explicit, idempotent init container avoids both traps.
+  postgres-init:
+    image: pgvector/pgvector:pg16
+    environment:
+      PGPASSWORD: ${SERVICE_PASSWORD_POSTGRES}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        psql -h postgres -U agenticir -d agenticir -tAc \
+          "SELECT 1 FROM pg_database WHERE datname='n8n'" | grep -q 1 \
+          || psql -h postgres -U agenticir -d agenticir -c "CREATE DATABASE n8n"
+        psql -h postgres -U agenticir -d agenticir -c "CREATE EXTENSION IF NOT EXISTS vector"
+        psql -h postgres -U agenticir -d n8n -c "CREATE EXTENSION IF NOT EXISTS vector"
+        echo "database bootstrap complete"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   # ── Redis: n8n queue mode + app-side caching ─────────────────────────────
   redis:
@@ -226,6 +255,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:
@@ -274,6 +305,8 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     restart: unless-stopped
