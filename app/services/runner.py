@@ -166,6 +166,12 @@ async def follow_up_investigation(
     snapshot = await get_graph().aget_state(_config(thread_id))
     values = dict(snapshot.values or {})
 
+    # A revision is a fresh run; it gets its own status line rather than
+    # overwriting the record of the investigation it supersedes.
+    from app.slack import progress
+
+    progress.reset(incident_id)
+
     revision = int(values.get("revision", 0) or 0) + 1
     alert = dict(values.get("alert", {}) or {})
     notes = list(alert.get("follow_up_notes", []) or [])
