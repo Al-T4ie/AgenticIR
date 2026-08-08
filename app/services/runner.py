@@ -152,14 +152,15 @@ async def follow_up_investigation(
         return "unknown"
 
     status = record["status"]
-    if status == "running":
-        # A thread cannot be invoked while a run is mid-flight; the caller tells
-        # the analyst it was noted, and the next sweep picks it up once idle.
-        return "queued"
-    if status == "awaiting_approval":
-        # Re-planning underneath a pending approval would invalidate the very
-        # actions the human is deciding on.
-        return "awaiting_approval"
+    if status in {"running", "awaiting_approval"}:
+        # The graph cannot be re-entered mid-run, and re-planning underneath a
+        # pending approval would invalidate the very actions being decided on.
+        # Neither is a reason to reject the information: telemetry does not wait
+        # for a decision, and an approver is exactly who should see it. Park it
+        # and apply it the moment the incident is idle again.
+        depth = await incidents.queue_note(incident_id, note, reported_by)
+        log.info("runner.note_queued", incident_id=incident_id, status=status, depth=depth)
+        return "queued" if status == "running" else "queued_for_approval"
 
     thread_id = record["thread_id"]
     snapshot = await get_graph().aget_state(_config(thread_id))
@@ -239,21 +240,64 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
         state = dict(snapshot.values or {})
         interrupts = _pending_interrupts(snapshot)
 
+        # Read what was already asked before the new state overwrites it, so the
+        # same three questions are not re-posted after every revision.
+        previous = await incidents.get_incident(incident_id)
+        asked_before = set((previous or {}).get("open_questions", []) or [])
+
         if interrupts:
             await incidents.save_state(incident_id, state, status="awaiting_approval")
             await _label_revision(incident_id, state)
             await _notify(incident_id, "awaiting_approval", interrupt=interrupts[0])
+            await _ask_open_questions(incident_id, state, asked_before)
             log.info("runner.awaiting_approval", incident_id=incident_id)
         else:
             await incidents.save_state(incident_id, state, status="completed")
             await _label_revision(incident_id, state)
             await _notify(incident_id, "completed")
+            await _ask_open_questions(incident_id, state, asked_before)
+            # Anything that arrived while this was in flight applies now.
+            await _apply_pending(incident_id)
             log.info(
                 "runner.completed",
                 incident_id=incident_id,
                 severity=state.get("severity"),
                 verdict=state.get("verdict"),
             )
+
+
+async def _ask_open_questions(
+    incident_id: str, state: dict[str, Any], asked_before: set[str]
+) -> None:
+    """Surface the gaps only a human can close — once each, not every round."""
+    questions = [q for q in (state.get("open_questions") or []) if q not in asked_before]
+    if not questions:
+        return
+    from app.slack import progress
+
+    await progress.ask_humans(incident_id, questions)
+    log.info("runner.asked_humans", incident_id=incident_id, questions=len(questions))
+
+
+async def _apply_pending(incident_id: str) -> None:
+    """Fold in information that arrived while the incident was busy.
+
+    Everything queued is applied as one revision rather than one run each — five
+    notes that landed during a two-minute investigation are five facts about the
+    same incident, not five reasons to re-investigate it.
+    """
+    queued = await incidents.drain_notes(incident_id)
+    if not queued:
+        return
+
+    note = "\n".join(f"- ({n.get('by') or 'unknown'}) {n.get('note', '')}" for n in queued)
+    reporters = sorted({str(n.get("by") or "") for n in queued if n.get("by")})
+    log.info("runner.applying_pending", incident_id=incident_id, count=len(queued))
+    await follow_up_investigation(
+        incident_id,
+        f"Information received while the investigation was in progress:\n{note}",
+        reported_by=", ".join(reporters),
+    )
 
 
 async def _label_revision(incident_id: str, state: dict[str, Any]) -> None:
@@ -270,9 +314,7 @@ async def _label_revision(incident_id: str, state: dict[str, Any]) -> None:
 
     await progress.emit(
         incident_id,
-        f":arrows_counterclockwise: *Revised assessment — revision {revision}*\n"
-        "New information was folded into the original investigation; "
-        "what follows supersedes the earlier conclusion.",
+        f":arrows_counterclockwise: *Revision {revision}* — supersedes the above.",
     )
 
 
