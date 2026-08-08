@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.api.deps import require_api_key, require_webhook_token
+from app.config import get_settings
 from app.observability import get_logger
 from app.services import incidents, runner
 
@@ -151,7 +152,17 @@ async def inbound_alert(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     question = str(payload.get("question", ""))
     source = str(payload.get("source", "webhook"))
 
-    record = await runner.start_investigation(alert=alert, question=question, source=source)
+    # An alert from a SIEM belongs in front of the analysts, not only in the
+    # dashboard. Callers can override the destination; otherwise it goes to the
+    # configured channel, and the run narrates itself in the thread it opens.
+    settings = get_settings()
+    channel = str(payload.get("slack_channel") or "")
+    if not channel and settings.slack_enabled:
+        channel = settings.slack_default_channel
+
+    record = await runner.start_investigation(
+        alert=alert, question=question, source=source, slack_channel=channel
+    )
     return {
         "incident_id": record["id"],
         "thread_id": record["thread_id"],
