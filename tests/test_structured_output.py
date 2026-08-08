@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from app.graph.llm import coerce_json_list
 from app.graph.nodes.containment import ContainmentPlan
@@ -42,9 +43,7 @@ def test_none_and_numbers_pass_through():
 
 # ── The schemas that carry model-filled lists ────────────────────────────────
 def test_specialist_report_accepts_a_stringified_findings_list():
-    payload = json.dumps(
-        [{"title": "Beaconing", "detail": "60s interval", "severity": "high"}]
-    )
+    payload = json.dumps([{"title": "Beaconing", "detail": "60s interval", "severity": "high"}])
     report = SpecialistReport.model_validate({"findings": payload, "gaps": ""})
     assert len(report.findings) == 1
     assert report.findings[0].title == "Beaconing"
@@ -74,5 +73,5 @@ def test_well_formed_input_still_works():
 
 def test_garbage_still_fails_loudly():
     """Leniency must not become silence — a genuinely wrong shape still raises."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         SpecialistReport.model_validate({"findings": "totally not a list"})
