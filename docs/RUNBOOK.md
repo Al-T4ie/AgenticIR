@@ -137,6 +137,27 @@ checkpoints grow with investigation count — there is no automatic pruning, by
 design, since they are the audit trail. Grow the volume in the Hetzner console,
 then `resize2fs` on the host.
 
+**The channel sweep is not picking anything up**
+Run it by hand and read the counts:
+```bash
+curl -s -X POST -H "X-API-Key: $API_KEY" https://$APP_FQDN/v1/slack/poll
+# {"channels":1,"candidates":3,"actions":1,"dispositions":{"update_incident":1,"ignore":2}}
+```
+`channels: 0` means the channel never resolved — grant `channels:read`, or set
+`SLACK_POLL_CHANNELS` to the raw id (`C0…`), which needs no extra scope.
+`candidates: 0` with traffic in the channel means either the bot lacks
+`channels:history`, or every message was already claimed — claims are in
+`slack_seen_messages`, one row per message the bot took responsibility for.
+`actions: 0` with candidates means the classifier chose `ignore`, which it is
+told to prefer; `poller.budget_reached` in the logs means `SLACK_POLL_MAX_ACTIONS`
+capped the sweep and the rest were deferred to the next one.
+
+**The bot answered the same message twice**
+It shouldn't: the Events API and the sweep both claim a message before acting,
+and the claim is a primary-key insert. If it happens, look for
+`slack_watch.requeued_stale` — a claim orphaned by a crash is offered round again
+after 15 minutes, which is deliberate, since the alternative is dropping it.
+
 **An investigation is wedged in `running`**
 It survived a restart but nothing resumed it. Inspect the graph state directly:
 ```bash
@@ -173,6 +194,11 @@ Common adjustments:
 - **Reports too verbose for Slack** → tighten the structure in `REPORT`.
 - **A specialist is not pulling its weight** → sharpen its objective wording in
   `SUPERVISOR`, which is what actually drives dispatch.
+- **The sweep acts on too much chatter** → the bias toward `ignore` lives in
+  `TRIAGE_PROMPT` in `app/slack/poller.py`; lowering `SLACK_POLL_MAX_ACTIONS`
+  caps the damage of a bad cycle without touching the prompt.
+- **The thread is too noisy during a run** → `SLACK_PROGRESS_UPDATES=false`
+  leaves the acknowledgement and the final report and drops the narration.
 
 Adding a specialist takes three edits: a prompt in `prompts.py`, an entry in
 `_PROMPT_BY_SPECIALIST` in `nodes/specialist.py`, and its name in
