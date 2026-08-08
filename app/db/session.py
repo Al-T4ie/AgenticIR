@@ -51,7 +51,11 @@ async def init_db() -> None:
         # deployment that predates a new field would keep running against the old
         # shape and fail on first write. Additive columns are reconciled here
         # until the projection schema is churning enough to justify Alembic.
-        for column, ddl in (("executed_actions", "JSON DEFAULT '[]'::json"),):
+        for column, ddl in (
+            ("executed_actions", "JSON DEFAULT '[]'::json"),
+            ("open_questions", "JSON DEFAULT '[]'::json"),
+            ("pending_notes", "JSON DEFAULT '[]'::json"),
+        ):
             await conn.execute(
                 text(f"ALTER TABLE incidents ADD COLUMN IF NOT EXISTS {column} {ddl}")
             )
