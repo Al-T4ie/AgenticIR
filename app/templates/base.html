@@ -89,6 +89,35 @@
   .banner.approve { background: rgba(91,141,239,.12); border-color: var(--accent-dim); }
   .banner.error { background: rgba(255,92,108,.12); border-color: var(--err); }
   .tag { display:inline-block; background: var(--panel-2); border:1px solid var(--line); border-radius:5px; padding:1px 7px; margin:2px 4px 2px 0; font-size:12px; }
+
+  /* Investigation timeline. Inline SVG so it needs no script and no CDN, and
+     scales with the viewBox rather than a fixed pixel width. */
+  .chart-wrap { overflow-x: auto; }
+  .gantt { width: 100%; min-width: 640px; height: auto; display: block; }
+  .gantt .lane-label { fill: var(--muted); font-size: 12px; font-family: inherit; }
+  .gantt .lane-rule { stroke: var(--line); stroke-width: 1; }
+  .gantt .grid-line { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; opacity: .6; }
+  .gantt .tick { fill: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; }
+  .gantt .run-band { fill: var(--panel-2); opacity: .55; }
+  .gantt .run-edge { stroke: var(--accent-dim); stroke-width: 1; stroke-dasharray: 3 3; }
+  .gantt .run-label { fill: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .6px; }
+  .gantt .span-text { fill: var(--bg); font-size: 10px; font-family: ui-monospace, monospace; font-weight: 700; }
+  .gantt .span { opacity: .95; }
+  .gantt .span.failed { fill: var(--err) !important; }
+  /* An unfinished span is an inference, not a measurement — show it hollow. */
+  .gantt .span.open { opacity: .35; }
+  .gantt .k-intake  { fill: var(--muted); }
+  .gantt .k-plan    { fill: var(--accent); }
+  .gantt .k-work    { fill: var(--low); }
+  .gantt .k-review  { fill: var(--med); }
+  .gantt .k-action  { fill: var(--high); }
+  .gantt .k-human   { fill: var(--info); }
+  i.key { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+  i.key.k-plan { background: var(--accent); }
+  i.key.k-work { background: var(--low); }
+  i.key.k-review { background: var(--med); }
+  i.key.k-action { background: var(--high); }
+  i.key.k-human { background: var(--info); }
 </style>
 </head>
 <body>
