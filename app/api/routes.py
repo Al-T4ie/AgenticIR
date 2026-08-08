@@ -32,6 +32,11 @@ class ApprovalDecision(BaseModel):
     note: str = ""
 
 
+class FollowUp(BaseModel):
+    note: str = Field(description="What has been learned since the last assessment")
+    reported_by: str = Field(default="", description="Slack user id or analyst name")
+
+
 class IncidentSummary(BaseModel):
     id: str
     status: str
@@ -93,6 +98,34 @@ async def approve(incident_id: str, decision: ApprovalDecision) -> dict[str, Any
     if record is None:
         raise HTTPException(status_code=404, detail=f"Unknown incident {incident_id}")
     return {"incident_id": incident_id, "status": "resuming"}
+
+
+@v1.post("/incidents/{incident_id}/follow-up", summary="Add information to an incident")
+async def follow_up(incident_id: str, payload: FollowUp) -> dict[str, Any]:
+    """Fold new information into an incident and re-assess it.
+
+    The re-run continues the same graph thread, so prior findings are kept and
+    the revised report lands in the original Slack thread.
+    """
+    outcome = await runner.follow_up_investigation(
+        incident_id, payload.note, reported_by=payload.reported_by
+    )
+    if outcome == "unknown":
+        raise HTTPException(status_code=404, detail=f"Unknown incident {incident_id}")
+    if outcome != "revising":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Incident is {outcome.replace('_', ' ')}; it cannot absorb new information yet",
+        )
+    return {"incident_id": incident_id, "status": "revising"}
+
+
+@v1.post("/slack/poll", summary="Run a Slack channel sweep now")
+async def poll_now() -> dict[str, Any]:
+    """Trigger the channel sweep out of band, rather than waiting for the timer."""
+    from app.slack import poller
+
+    return await poller.sweep()
 
 
 router.include_router(v1)
