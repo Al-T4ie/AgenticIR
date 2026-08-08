@@ -228,7 +228,7 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
     # 1. New top-level channel messages.
     history = await _channel_messages(channel, oldest)
     newest = cursor
-    candidates: list[dict[str, Any]] = []
+    from_channel: list[dict[str, Any]] = []
 
     for message in history:
         ts = str(message.get("ts", ""))
@@ -236,7 +236,7 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
             newest = ts
         if not _is_human_message(message, self_id):
             continue
-        candidates.append(
+        from_channel.append(
             {
                 "ts": ts,
                 "user": str(message.get("user", "")),
@@ -250,6 +250,7 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
     #    never appear in conversations.history, and they are where an analyst is
     #    most likely to add the information that changes an assessment.
     known = await _recent_incidents(channel)
+    from_threads: list[dict[str, Any]] = []
     for incident in known[:_MAX_THREADS_PER_SWEEP]:
         thread_ts = incident.get("slack_thread_ts") or ""
         if not thread_ts:
@@ -263,7 +264,7 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
             ts = str(message.get("ts", ""))
             if ts == thread_ts or not _is_human_message(message, self_id):
                 continue
-            candidates.append(
+            from_threads.append(
                 {
                     "ts": ts,
                     "user": str(message.get("user", "")),
@@ -274,12 +275,28 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
             )
 
     # 3. Messages a previous sweep could not apply yet (incident was mid-run).
+    seen_ts = {c["ts"] for c in (*from_channel, *from_threads)}
+    from_deferred: list[dict[str, Any]] = []
     for ts in await slack_watch.deferred(channel):
-        if any(c["ts"] == ts for c in candidates):
+        if ts in seen_ts:
             continue
         recovered = await _refetch(channel, ts, known)
         if recovered:
-            candidates.append(recovered)
+            from_deferred.append(recovered)
+
+    # Priority order matters, because the cursor advances past whatever this
+    # sweep does not claim. Deferred messages have already been judged worth
+    # acting on; thread replies are bound to a known incident and are where a
+    # revision comes from; loose channel chatter is the most likely to be noise.
+    candidates = [*from_deferred, *from_threads, *from_channel]
+    if len(candidates) > _MAX_CANDIDATES:
+        log.warning(
+            "poller.candidates_truncated",
+            channel=channel,
+            seen=len(candidates),
+            considered=_MAX_CANDIDATES,
+            hint="messages beyond the cap are not read again — lower the poll interval",
+        )
 
     # 4. Claim what is ours. Anything already claimed belongs to another worker,
     #    or was handled by the Events API when it was mentioned directly.
