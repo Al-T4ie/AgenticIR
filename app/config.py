@@ -76,6 +76,25 @@ class Settings(BaseSettings):
     slack_signing_secret: str = ""
     slack_default_channel: str = "#incident-response"
 
+    # Narrate each phase of the investigation into the incident thread, so the
+    # analyst can watch the agents work instead of waiting on a silent gap.
+    slack_progress_updates: bool = True
+
+    # ── Slack channel polling ──
+    # The Events API only delivers mentions and DMs. Polling lets the bot read
+    # the wider conversation in a channel it has been invited to, notice new
+    # information about incidents it already reported, and follow up in-thread.
+    slack_poll_enabled: bool = False
+    slack_poll_interval_seconds: int = 300
+    # Comma-separated channel IDs (C…/G…) or #names. Blank uses the default channel.
+    slack_poll_channels: str = ""
+    # A busy channel must not be able to spawn an unbounded number of runs.
+    slack_poll_max_actions: int = 3
+    # How far back to read on the very first sweep, before a cursor exists.
+    slack_poll_lookback_minutes: int = 60
+    # Incidents updated within this window keep having their threads re-read.
+    slack_poll_thread_window_hours: int = 24
+
     # ── n8n ──
     n8n_enabled: bool = False
     n8n_base_url: str = "http://n8n:5678"
@@ -97,6 +116,10 @@ class Settings(BaseSettings):
         "llm_timeout_seconds",
         "max_investigation_rounds",
         "max_parallel_specialists",
+        "slack_poll_interval_seconds",
+        "slack_poll_max_actions",
+        "slack_poll_lookback_minutes",
+        "slack_poll_thread_window_hours",
         mode="before",
     )
     @classmethod
@@ -124,6 +147,14 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def polled_channels(self) -> list[str]:
+        """Channels the poller sweeps, falling back to the default channel."""
+        listed = [c.strip() for c in self.slack_poll_channels.split(",") if c.strip()]
+        if listed:
+            return listed
+        return [self.slack_default_channel] if self.slack_default_channel else []
 
     @property
     def is_production(self) -> bool:
