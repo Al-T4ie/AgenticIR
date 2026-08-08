@@ -93,8 +93,8 @@ it, someone with it must click through step 4; everything else still works.
 
 - **Bundled** (default): the stack ships its own n8n in queue mode. Self-contained,
   won't disturb your existing automations, needs the `ir-n8n` hostname. Use
-  `infra/coolify/docker-compose.coolify.yml`.
-- **Yours**: use `infra/coolify/docker-compose.external-n8n.yml`. I need
+  `docker-compose.coolify.yml`.
+- **Yours**: use `docker-compose.coolify-external-n8n.yml`. I need
   `N8N_BASE_URL` (must be reachable *from the container* — a public HTTPS URL
   always works) and you pick an `N8N_WEBHOOK_TOKEN` that I set on both sides.
   No second hostname needed.
@@ -162,7 +162,7 @@ For your own n8n, add:
 export N8N_BASE_URL='https://n8n.yourdomain.com'
 export N8N_WEBHOOK_TOKEN="$(openssl rand -hex 32)"   # keep this, you need it in n8n
 python3 infra/coolify/bootstrap.py \
-  --compose-path infra/coolify/docker-compose.external-n8n.yml
+  --compose-path docker-compose.coolify-external-n8n.yml
 ```
 
 **Grab the generated API key** from Coolify → resource → Environment Variables →
