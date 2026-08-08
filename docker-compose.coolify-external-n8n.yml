@@ -29,7 +29,12 @@ services:
       APP_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: json
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      # One worker by default. prometheus_client keeps a per-process registry,
+      # so with several workers /metrics reports whichever one answered the
+      # scrape — node timings and call counts become meaningless. The workload
+      # is LLM-bound and fully async, so a second worker buys little. Raise it
+      # only alongside PROMETHEUS_MULTIPROC_DIR.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       CORS_ORIGINS: ${CORS_ORIGINS:-${SERVICE_FQDN_API_8000}}
 
       API_KEY: ${SERVICE_BASE64_64_APIKEY}
