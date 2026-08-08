@@ -1,0 +1,83 @@
+{
+  "name": "AgenticIR \u2014 tool: enrich_ioc",
+  "meta": {
+    "description": "Exposed to the agents as the `enrich_ioc` tool. Returns labelled fixture intel; replace the lookup node with your licensed providers. Uses no $env, since n8n blocks environment access inside Code nodes by default."
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agentic-ir/enrich-ioc",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "tool-webhook",
+      "name": "Agent tool call",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        300
+      ],
+      "webhookId": "agentic-ir-enrich-ioc",
+      "notes": "Header Auth credential must match AGENTICIR_WEBHOOK_TOKEN (Authorization: Bearer \u2026)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Classify the indicator and return intel for it.\n//\n// No $env here on purpose: n8n blocks environment access inside Code nodes by\n// default (N8N_BLOCK_ENV_ACCESS_IN_NODE), and reading it throws rather than\n// returning undefined \u2014 which silently emptied this workflow's response.\n//\n// To wire real providers: replace the FIXTURES lookup below with HTTP Request\n// nodes for the feeds you license, and keep the rule that an indicator you did\n// not check returns \"unknown\" rather than \"clean\". A fabricated clean verdict\n// is how a real detection gets suppressed.\nconst body = $input.first().json.body ?? $input.first().json;\nconst query = String(body?.input?.query ?? '').trim();\nconst incident_id = body?.incident_id ?? '';\n\nconst patterns = {\n  ipv4: /^(?:(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)$/,\n  sha256: /^[a-fA-F0-9]{64}$/,\n  md5: /^[a-fA-F0-9]{32}$/,\n  domain: /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,}$/,\n  email: /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/,\n};\nlet kind = 'unknown';\nfor (const [name, re] of Object.entries(patterns)) {\n  if (re.test(query)) { kind = name; break; }\n}\n\nconst FIXTURES = {\n  'cdn-update-service.top': {\n    verdict: 'malicious', confidence: 0.93,\n    categories: ['command-and-control', 'malware-distribution'],\n    first_seen: '2026-07-29', registrar: 'Privacy-protected (NiceNIC)',\n    domain_age_days: 11, associated_families: ['Latrodectus'],\n    providers: [\n      { name: 'demo-intel', verdict: 'malicious', detections: '14/71' },\n      { name: 'demo-passive-dns', verdict: 'suspicious', note: 'Resolved to 5 distinct hosts in 11 days' },\n    ],\n    summary: 'Newly registered domain serving as C2 for a Latrodectus loader campaign. Beacon interval ~60s over HTTPS.',\n  },\n  '45.33.32.156': {\n    verdict: 'suspicious', confidence: 0.71,\n    categories: ['scanning', 'brute-force'],\n    asn: 'AS63949 Akamai Connected Cloud', country: 'US', first_seen: '2026-08-01',\n    providers: [\n      { name: 'demo-intel', verdict: 'suspicious', detections: '4/71' },\n      { name: 'demo-scanner-feed', verdict: 'benign', note: 'Matches a known internet-wide research scanner' },\n    ],\n    summary: 'Providers disagree: flagged for credential stuffing by one feed, classified as benign research scanning by another. Treat as unresolved.',\n  },\n  '9f2b8c1e4a7d3f6b0c5e8a1d4f7b2c9e6a3d0f5b8c1e4a7d2f9b6c3e0a5d8f1b': {\n    verdict: 'malicious', confidence: 0.88, file_type: 'PE32 executable',\n    first_submission: '2026-08-02', signed: false, associated_families: ['Latrodectus'],\n    providers: [{ name: 'demo-intel', verdict: 'malicious', detections: '46/72' }],\n    summary: 'Loader binary matching the Latrodectus family. Establishes persistence via a scheduled task.',\n  },\n  'mail.corp-partner-portal.com': {\n    verdict: 'benign', confidence: 0.9, categories: ['business'], domain_age_days: 2190,\n    providers: [{ name: 'demo-intel', verdict: 'clean', detections: '0/71' }],\n    summary: 'Established supplier domain, six years old, clean across all feeds. No indication of compromise.',\n  },\n};\n\nconst hit = FIXTURES[query.toLowerCase()];\nreturn [{\n  json: hit\n    ? { indicator: query, kind, incident_id, demo_fixture: true, ...hit }\n    : {\n        indicator: query, kind, incident_id, demo_fixture: true,\n        verdict: 'unknown', confidence: 0.0, providers: [],\n        summary: 'No intel available for this indicator. Treat it as UNKNOWN \\u2014 '\n               + 'this is an absence of data, not evidence that it is benign.',\n      },\n}];"
+      },
+      "id": "demo-lookup",
+      "name": "Look up indicator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Return to agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Agent tool call": {
+      "main": [
+        [
+          {
+            "node": "Look up indicator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look up indicator": {
+      "main": [
+        [
+          {
+            "node": "Return to agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

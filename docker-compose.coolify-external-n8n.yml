@@ -1,0 +1,184 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  AgenticIR — Coolify stack, pointed at an n8n you already run
+#
+#  Same as docker-compose.coolify.yml minus the bundled n8n and n8n-worker.
+#  Use this when you have an existing n8n and would rather not run a second one.
+#
+#     python infra/coolify/bootstrap.py \
+#       --compose-path docker-compose.coolify-external-n8n.yml
+#
+#  You must set N8N_BASE_URL to a URL this container can reach, and create the
+#  matching Header Auth credential in your n8n so the agent tool webhooks
+#  authenticate. See infra/coolify/README.md.
+#
+#  NOTE: this file intentionally duplicates the api/postgres/redis services from
+#  docker-compose.coolify.yml. It must also stay at the repository root. If you change one, change both — CI parses both
+#  but cannot tell you they have drifted apart semantically.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    environment:
+      SERVICE_FQDN_API_8000: ${SERVICE_FQDN_API_8000}
+      PUBLIC_BASE_URL: ${SERVICE_FQDN_API_8000}
+
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: json
+      # One worker by default. prometheus_client keeps a per-process registry,
+      # so with several workers /metrics reports whichever one answered the
+      # scrape — node timings and call counts become meaningless. The workload
+      # is LLM-bound and fully async, so a second worker buys little. Raise it
+      # only alongside PROMETHEUS_MULTIPROC_DIR.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      CORS_ORIGINS: ${CORS_ORIGINS:-${SERVICE_FQDN_API_8000}}
+
+      API_KEY: ${SERVICE_BASE64_64_APIKEY}
+
+      # ── LLM ──
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      LLM_MODEL_SUPERVISOR: ${LLM_MODEL_SUPERVISOR:-claude-sonnet-5}
+      LLM_MODEL_SPECIALIST: ${LLM_MODEL_SPECIALIST:-claude-haiku-4-5-20251001}
+      LLM_MODEL_CRITIC: ${LLM_MODEL_CRITIC:-claude-opus-5}
+
+      # ── Agent behaviour ──
+      MAX_INVESTIGATION_ROUNDS: ${MAX_INVESTIGATION_ROUNDS:-3}
+      MAX_PARALLEL_SPECIALISTS: ${MAX_PARALLEL_SPECIALISTS:-5}
+      REQUIRE_APPROVAL_FOR_CONTAINMENT: ${REQUIRE_APPROVAL_FOR_CONTAINMENT:-true}
+      AUTO_APPROVE_SEVERITY_BELOW: ${AUTO_APPROVE_SEVERITY_BELOW:-low}
+
+      # ── Persistence ──
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: agenticir
+      POSTGRES_USER: agenticir
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES}
+      REDIS_URL: redis://redis:6379/0
+
+      # ── Slack ──
+      SLACK_ENABLED: ${SLACK_ENABLED:-false}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      SLACK_DEFAULT_CHANNEL: ${SLACK_DEFAULT_CHANNEL:-#incident-response}
+      SLACK_PROGRESS_UPDATES: ${SLACK_PROGRESS_UPDATES:-true}
+      SLACK_POLL_ENABLED: ${SLACK_POLL_ENABLED:-false}
+      SLACK_POLL_INTERVAL_SECONDS: ${SLACK_POLL_INTERVAL_SECONDS:-300}
+      SLACK_POLL_CHANNELS: ${SLACK_POLL_CHANNELS:-}
+      SLACK_POLL_MAX_ACTIONS: ${SLACK_POLL_MAX_ACTIONS:-3}
+      SLACK_POLL_LOOKBACK_MINUTES: ${SLACK_POLL_LOOKBACK_MINUTES:-60}
+      SLACK_POLL_THREAD_WINDOW_HOURS: ${SLACK_POLL_THREAD_WINDOW_HOURS:-24}
+
+      # ── External n8n ──
+      # Must be reachable from this container. A public HTTPS URL always works;
+      # a private address only works if the two share a network.
+      N8N_ENABLED: ${N8N_ENABLED:-true}
+      N8N_BASE_URL: ${N8N_BASE_URL}
+      # You create this token; set the same value as the Bearer credential on
+      # every agent-callable webhook in your n8n.
+      N8N_WEBHOOK_TOKEN: ${N8N_WEBHOOK_TOKEN}
+      N8N_TOOLS: ${N8N_TOOLS:-}
+
+      # ── Observability ──
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-agentic-ir}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/ready || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "3.0"
+          memory: 3G
+        reservations:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: agenticir
+      POSTGRES_USER: agenticir
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agenticir -d agenticir"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+volumes:
+  postgres-data:
+  redis-data:

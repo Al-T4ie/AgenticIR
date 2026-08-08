@@ -1,0 +1,41 @@
+{
+  "title": "Large outbound transfer to external domain",
+  "rule_name": "DLP-0117: Bulk data egress to non-corporate domain",
+  "severity": "medium",
+  "detected_at": "2026-08-08T11:02:41Z",
+  "source_system": "Netskope",
+  "host": {
+    "hostname": "PROC-WS-11",
+    "ip": "10.6.9.44",
+    "os": "Windows 11 23H2",
+    "department": "Procurement",
+    "criticality": "low"
+  },
+  "user": {
+    "username": "m.lindqvist",
+    "display_name": "M. Lindqvist",
+    "department": "Procurement",
+    "privileged": false
+  },
+  "network": {
+    "connections": [
+      {
+        "dst_domain": "mail.corp-partner-portal.com",
+        "dst_port": 443,
+        "bytes_out": 48211904,
+        "protocol": "https",
+        "duration_seconds": 71
+      }
+    ]
+  },
+  "context": {
+    "time_of_day": "11:02 local, working hours",
+    "user_baseline": "Sends supplier packs to this domain 2-4 times per month",
+    "prior_alerts_same_pair": 9,
+    "prior_alerts_all_closed_benign": true,
+    "mfa_status": "satisfied at session start",
+    "file_types": ["pdf", "xlsx"]
+  },
+  "detail": "48 MB uploaded over HTTPS to mail.corp-partner-portal.com during working hours. The same host/domain pair has generated nine prior alerts, all closed as benign supplier correspondence. The user's role involves routine transfer of tender documents.",
+  "raw_events": 3
+}

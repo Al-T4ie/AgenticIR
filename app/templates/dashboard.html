@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Incidents — AgenticIR{% endblock %}
+{% block content %}
+
+<div class="panel">
+  <h2>Start an investigation</h2>
+  <form method="post" action="/ui/investigate" class="row">
+    <input type="text" name="question" style="flex:1 1 420px"
+           placeholder="e.g. Suspicious PowerShell on FIN-WS-04 spawning from Outlook" required>
+    <button type="submit">Investigate</button>
+  </form>
+</div>
+
+<div class="grid">
+  <div class="stat"><div class="n">{{ incidents|length }}</div><div class="l">Shown</div></div>
+  <div class="stat"><div class="n st-running">{{ counts.get('running', 0) }}</div><div class="l">Running</div></div>
+  <div class="stat"><div class="n st-awaiting_approval">{{ counts.get('awaiting_approval', 0) }}</div><div class="l">Awaiting approval</div></div>
+  <div class="stat"><div class="n st-completed">{{ counts.get('completed', 0) }}</div><div class="l">Completed</div></div>
+  <div class="stat"><div class="n st-failed">{{ counts.get('failed', 0) }}</div><div class="l">Failed</div></div>
+</div>
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between; margin-bottom:14px">
+    <h2 style="margin:0">Incidents</h2>
+    <form method="get" action="/ui" class="row">
+      <select name="status" style="width:auto">
+        <option value="">All statuses</option>
+        {% for s in ['running', 'awaiting_approval', 'completed', 'failed'] %}
+        <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>{{ s.replace('_',' ')|title }}</option>
+        {% endfor %}
+      </select>
+      <select name="severity" style="width:auto">
+        <option value="">All severities</option>
+        {% for s in ['critical', 'high', 'medium', 'low', 'informational'] %}
+        <option value="{{ s }}" {% if filter_severity == s %}selected{% endif %}>{{ s|title }}</option>
+        {% endfor %}
+      </select>
+      <button class="secondary" type="submit">Filter</button>
+    </form>
+  </div>
+
+  {% if incidents %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Incident</th><th>Title</th><th>Severity</th><th>Verdict</th><th>Status</th><th>Source</th><th>Opened</th></tr>
+      </thead>
+      <tbody>
+      {% for i in incidents %}
+        <tr>
+          <td class="mono"><a href="/ui/incidents/{{ i.id }}">{{ i.id }}</a></td>
+          <td>{{ i.title }}</td>
+          <td><span class="pill sev-{{ i.severity }}">{{ i.severity }}</span></td>
+          <td class="muted">{{ i.verdict.replace('_',' ') }}</td>
+          <td class="st-{{ i.status }}">{{ i.status.replace('_',' ') }}</td>
+          <td class="muted">{{ i.source }}</td>
+          <td class="muted mono">{{ (i.created_at or '')[:19].replace('T',' ') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No incidents yet. Start one above, or send an alert to <span class="mono">POST /webhooks/alert</span>.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -1,0 +1,115 @@
+# Local development stack.
+#
+#   cp .env.example .env && make up
+#
+# Ports are published to the host here for convenience. The Coolify stack in
+# docker-compose.coolify.yml publishes nothing except through the
+# proxy — do not copy this file to production.
+
+name: agenticir
+
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    env_file: [.env]
+    environment:
+      APP_ENV: development
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+      N8N_BASE_URL: http://n8n:5678
+      WEB_CONCURRENCY: 1
+      PUBLIC_BASE_URL: http://localhost:8000
+    ports:
+      - "8000:8000"
+    volumes:
+      # Live reload of application code during development.
+      - ./app:/srv/app:ro
+    command:
+      - sh
+      - -c
+      - "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /srv/app"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  postgres:
+    # pgvector so RAG over runbooks/past incidents needs no extra service.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agenticir}
+      POSTGRES_USER: ${POSTGRES_USER:-agenticir}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agenticir-local-dev}
+      # n8n gets its own database inside the same instance.
+      POSTGRES_MULTIPLE_DATABASES: n8n
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agenticir} -d ${POSTGRES_DB:-agenticir}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change-me-32-chars-minimum-secret}
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-agenticir}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-agenticir-local-dev}
+      GENERIC_TIMEZONE: UTC
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      # Lets n8n workflows call the IR API by service name.
+      AGENTICIR_API_URL: http://api:8000
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./infra/n8n/workflows:/workflows:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Optional local inference. Start with: make up-ollama
+  ollama:
+    image: ollama/ollama:latest
+    profiles: [ollama]
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  n8n-data:
+  ollama-data:

@@ -1,0 +1,108 @@
+{
+  "name": "AgenticIR \u2014 tool: contain_host (SIMULATED)",
+  "meta": {
+    "description": "Exposed to the agents as the `contain_host` tool. SIMULATES host isolation and returns the result. The Slack confirmation lives in the app, not here: posting from n8n needed $env for the bot token, which n8n blocks in Code nodes, and the app already reports executed actions into the incident thread."
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agentic-ir/contain-host",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "tool-webhook",
+      "name": "Agent action call",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        300
+      ],
+      "webhookId": "agentic-ir-contain-host",
+      "notes": "Header Auth credential = Authorization: Bearer <N8N_WEBHOOK_TOKEN>"
+    },
+    {
+      "parameters": {
+        "jsCode": "// The executor sends { incident_id, input: { action, target, ...tool_args } }.\nconst body = $input.first().json.body ?? $input.first().json;\nconst input = body.input ?? {};\n\nreturn [{\n  json: {\n    incident_id: body.incident_id ?? 'unknown',\n    action: input.action ?? 'isolate_host',\n    target: input.target ?? '',\n    reason: input.reason ?? input.justification ?? '',\n  },\n}];"
+      },
+      "id": "parse",
+      "name": "Parse action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u2500\u2500 SIMULATION \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n// Replace this node with your real containment call when going live, e.g.\n//   CrowdStrike : POST /devices/entities/devices-actions/v2?action_name=contain\n//   Defender    : POST /api/machines/{id}/isolate\n//   Entra ID    : PATCH /users/{id}  { accountEnabled: false }\n//   Palo Alto   : add address to a dynamic block list\n//\n// Everything below fabricates a plausible success response. It is marked\n// simulated:true so the record never claims a real action was taken.\nconst { incident_id, action, target, reason } = $input.first().json;\n\nconst ticket = 'CONTAIN-' + String(Math.abs(\n  [...(incident_id + target)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7)\n) % 100000).padStart(5, '0');\n\nreturn [{\n  json: {\n    simulated: true,\n    status: 'success',\n    action,\n    target,\n    reason,\n    incident_id,\n    containment_id: ticket,\n    isolated_at: new Date().toISOString(),\n    network_access: action === 'isolate_host' ? 'blocked except management' : 'unchanged',\n    reversible_via: 'lift_containment with containment_id ' + ticket,\n    note: 'SIMULATED action \u2014 no real system was modified.',\n  },\n}];"
+      },
+      "id": "simulate",
+      "name": "Simulate isolation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Return to agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        640,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Agent action call": {
+      "main": [
+        [
+          {
+            "node": "Parse action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse action": {
+      "main": [
+        [
+          {
+            "node": "Simulate isolation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simulate isolation": {
+      "main": [
+        [
+          {
+            "node": "Return to agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true
+  },
+  "pinData": {}
+}

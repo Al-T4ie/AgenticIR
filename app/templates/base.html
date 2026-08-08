@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}AgenticIR{% endblock %}</title>
+<style>
+  /* Self-contained: no CDN, so the dashboard works behind a strict CSP. */
+  :root {
+    --bg: #0f1117; --panel: #171a23; --panel-2: #1e2230; --line: #2a2f40;
+    --text: #e6e8ef; --muted: #98a0b3; --accent: #5b8def; --accent-dim: #3a5da8;
+    --crit: #ff4d5e; --high: #ff8a3d; --med: #ffc44d; --low: #64d2a0; --info: #6aa8ff;
+    --ok: #3ecf8e; --warn: #ffb020; --err: #ff5c6c;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7fa; --panel: #ffffff; --panel-2: #f0f2f7; --line: #dfe3ec;
+      --text: #131722; --muted: #5c6478; --accent: #2f6bd8; --accent-dim: #9dbaf0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 14px 24px;
+    border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5;
+  }
+  header .brand { font-weight: 700; letter-spacing: .3px; }
+  header .brand span { color: var(--accent); }
+  header nav { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; margin-bottom: 18px;
+  }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  h2 { font-size: 16px; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+  }
+  .sev-critical { background: rgba(255,77,94,.16); color: var(--crit); }
+  .sev-high { background: rgba(255,138,61,.16); color: var(--high); }
+  .sev-medium { background: rgba(255,196,77,.16); color: var(--med); }
+  .sev-low { background: rgba(100,210,160,.16); color: var(--low); }
+  .sev-informational { background: rgba(106,168,255,.16); color: var(--info); }
+  .st-running { color: var(--warn); }
+  .st-completed { color: var(--ok); }
+  .st-awaiting_approval { color: var(--accent); font-weight: 600; }
+  .st-failed { color: var(--err); }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  input[type=text], input[type=password], textarea, select {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 7px; padding: 9px 11px; font: inherit; width: 100%;
+  }
+  button, .btn {
+    background: var(--accent); color: #fff; border: 0; border-radius: 7px;
+    padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  button.danger { background: var(--err); }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .stat { background: var(--panel-2); border-radius: 9px; padding: 14px; }
+  .stat .n { font-size: 26px; font-weight: 700; }
+  .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  pre.report {
+    white-space: pre-wrap; word-wrap: break-word; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 16px; font: inherit; margin: 0;
+  }
+  .timeline { list-style: none; padding: 0; margin: 0; }
+  .timeline li { padding: 8px 0 8px 16px; border-left: 2px solid var(--line); margin-left: 6px; }
+  .timeline li b { color: var(--accent); }
+  .finding { border-left: 3px solid var(--line); padding: 10px 14px; margin-bottom: 10px; background: var(--panel-2); border-radius: 0 8px 8px 0; }
+  .finding.critical, .finding.high { border-left-color: var(--crit); }
+  .finding.medium { border-left-color: var(--med); }
+  .banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; border: 1px solid var(--line); }
+  .banner.approve { background: rgba(91,141,239,.12); border-color: var(--accent-dim); }
+  .banner.error { background: rgba(255,92,108,.12); border-color: var(--err); }
+  .tag { display:inline-block; background: var(--panel-2); border:1px solid var(--line); border-radius:5px; padding:1px 7px; margin:2px 4px 2px 0; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Agentic<span>IR</span></div>
+  <nav>
+    <a href="/ui">Incidents</a>
+    <a href="/docs">API</a>
+    <form method="post" action="/ui/logout" style="margin:0">
+      <button class="secondary" type="submit">Sign out</button>
+    </form>
+  </nav>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

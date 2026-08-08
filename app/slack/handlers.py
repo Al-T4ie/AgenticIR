@@ -1,0 +1,297 @@
+"""Slack event and interactivity handling.
+
+Slack retries anything it doesn't get a 200 for within 3 seconds, so every
+handler here acknowledges immediately and does the real work in the background.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from typing import Any
+
+from app.config import get_settings
+from app.observability import get_logger
+from app.services import incidents, runner, slack_watch
+from app.slack import blocks, notifier
+
+log = get_logger(__name__)
+
+# Drop the leading <@U123456> mention from the analyst's text.
+_MENTION = re.compile(r"<@[A-Z0-9]+>\s*")
+# Slack wraps bare URLs/emails as <url|label>; keep the label.
+_SLACK_LINK = re.compile(r"<(?:https?://|mailto:)([^|>]+)(?:\|[^>]*)?>")
+
+_background: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+def clean_text(raw: str) -> str:
+    text = _MENTION.sub("", raw or "")
+    text = _SLACK_LINK.sub(r"\1", text)
+    return text.strip()
+
+
+async def handle_event(payload: dict[str, Any]) -> None:
+    """Route an Events API callback. Called after the HTTP 200 has been sent."""
+    event = payload.get("event", {}) or {}
+    kind = event.get("type")
+
+    # Ignore our own messages and any bot chatter, or we loop forever.
+    if event.get("bot_id") or event.get("subtype") == "bot_message":
+        return
+
+    is_mention = kind == "app_mention"
+    is_dm = kind == "message" and event.get("channel_type") == "im"
+
+    if not (is_mention or is_dm):
+        log.debug("slack.event_ignored", kind=kind)
+        return
+
+    # Claim the message so the channel poller doesn't handle it a second time.
+    # Slack also redelivers events on its own retry schedule; the claim makes
+    # that idempotent too. A DM channel is never polled, so it needs no claim.
+    channel = str(event.get("channel", ""))
+    ts = str(event.get("ts", ""))
+    if is_mention and channel and ts:
+        try:
+            if not await slack_watch.claim(channel, ts, disposition="mention"):
+                log.info("slack.event_already_claimed", channel=channel, ts=ts)
+                return
+        except Exception as exc:  # noqa: BLE001 — never drop an event over bookkeeping
+            log.warning("slack.claim_failed", error=str(exc))
+
+    await _handle_mention(event)
+
+
+async def _handle_mention(event: dict[str, Any]) -> None:
+    channel = event.get("channel", "")
+    user = event.get("user", "")
+    text = clean_text(event.get("text", ""))
+    # Reply in-thread when mentioned inside one; otherwise start a thread on this message.
+    thread_ts = event.get("thread_ts") or event.get("ts", "")
+
+    if not text:
+        await notifier.post(
+            channel,
+            text="Tell me what to investigate.",
+            thread_ts=thread_ts,
+        )
+        return
+
+    # A mention inside an existing incident thread is a follow-up, not a new
+    # incident.
+    existing = await incidents.get_by_slack_thread(channel, thread_ts)
+    if existing:
+        await _handle_followup(existing, text, channel, thread_ts, user=user)
+        return
+
+    record = await runner.start_investigation(
+        question=text,
+        alert={"title": text[:200], "reported_by": user, "channel": channel, "raw": text},
+        source="slack",
+        slack_channel=channel,
+        slack_thread_ts=thread_ts,
+    )
+    await notifier.acknowledge(channel, thread_ts, record["id"], record["title"])
+    log.info("slack.investigation_started", incident_id=record["id"], user=user)
+
+
+async def _handle_followup(
+    incident: dict[str, Any], text: str, channel: str, thread_ts: str, user: str = ""
+) -> None:
+    """Handle a mention inside an incident thread.
+
+    Two things arrive here and they need different treatment: a *question* about
+    the incident, which is answered from the record, and *new information*,
+    which should reopen the investigation rather than be answered at.
+    """
+    status = incident.get("status")
+    if status == "running":
+        await notifier.post(
+            channel,
+            text="Still working on it — I'll post here when the investigation completes.",
+            thread_ts=thread_ts,
+        )
+        return
+    if status == "awaiting_approval":
+        await notifier.post(
+            channel,
+            text="This incident is waiting on a containment decision — use the buttons above.",
+            thread_ts=thread_ts,
+        )
+        return
+
+    if await _adds_information(incident, text, user):
+        outcome = await runner.follow_up_investigation(incident["id"], text, reported_by=user)
+        if outcome == "revising":
+            await notifier.post(
+                channel,
+                text="New information noted — re-assessing.",
+                blocks_payload=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": ":arrows_counterclockwise: *New information* — "
+                            f"re-assessing `{incident['id']}` with this taken into account.",
+                        },
+                    }
+                ],
+                thread_ts=thread_ts,
+            )
+            return
+        # Anything else (a race back into running, a vanished record) is better
+        # answered than silently dropped.
+
+    await answer_followup(incident, text, channel, thread_ts)
+
+
+async def _adds_information(incident: dict[str, Any], text: str, user: str) -> bool:
+    """Does this message change what we know, or is it just asking?"""
+    try:
+        from app.slack import poller
+
+        dispositions = await poller.classify(
+            [
+                {
+                    "ts": "followup",
+                    "user": user,
+                    "text": text,
+                    "thread_ts": incident.get("slack_thread_ts", ""),
+                    "incident_id": incident["id"],
+                }
+            ],
+            [incident],
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to answering, never to silence
+        log.warning("slack.intent_classification_failed", error=str(exc))
+        return False
+    decision = dispositions.get("followup")
+    return bool(decision and decision.action == "update_incident")
+
+
+async def answer_followup(
+    incident: dict[str, Any], text: str, channel: str, thread_ts: str
+) -> None:
+    """Answer a question strictly from what the incident record contains."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from app.graph import llm
+
+    context = json.dumps(
+        {
+            "verdict": incident.get("verdict"),
+            "severity": incident.get("severity"),
+            "summary": incident.get("summary"),
+            "findings": incident.get("findings", [])[:20],
+            "report": (incident.get("report") or "")[:6000],
+        },
+        default=str,
+    )
+    try:
+        answer = await llm.text(
+            "specialist",
+            [
+                SystemMessage(
+                    content=(
+                        "You are answering an analyst's follow-up about a completed "
+                        "investigation. Answer only from the incident record supplied. "
+                        "If the record does not contain the answer, say so plainly and "
+                        "suggest opening a new investigation. Use Slack markdown."
+                    )
+                ),
+                HumanMessage(content=f"INCIDENT RECORD:\n{context}\n\nQUESTION: {text}"),
+            ],
+        )
+    except Exception as exc:
+        log.error("slack.followup_failed", error=str(exc))
+        answer = f"Couldn't answer that: {exc}"
+
+    await notifier.post(channel, text=answer, thread_ts=thread_ts)
+
+
+async def handle_interaction(payload: dict[str, Any]) -> None:
+    """Handle a Block Kit button press (approve/reject containment)."""
+    if payload.get("type") != "block_actions":
+        return
+
+    actions = payload.get("actions", []) or []
+    if not actions:
+        return
+
+    action = actions[0]
+    action_id = action.get("action_id", "")
+    incident_id = action.get("value", "")
+    user = (payload.get("user") or {}).get("id", "unknown")
+    container = payload.get("container") or {}
+    channel = (payload.get("channel") or {}).get("id", "")
+    thread_ts = container.get("thread_ts") or container.get("message_ts", "")
+
+    if action_id not in {"approve_all", "reject_all"} or not incident_id:
+        return
+
+    record = await incidents.get_incident(incident_id)
+    if record is None:
+        await notifier.post(channel, text=f"Unknown incident `{incident_id}`.", thread_ts=thread_ts)
+        return
+
+    approved = action_id == "approve_all"
+    pending = [a for a in record.get("containment_actions", []) if a.get("requires_approval")]
+
+    decision = {
+        "approved_all": approved,
+        "approved_actions": [a["action"] for a in pending] if approved else [],
+        "approver": user,
+        "note": "approved via Slack" if approved else "rejected via Slack",
+    }
+
+    await notifier.post(
+        channel,
+        text=blocks.decision_receipt(incident_id, user, approved, len(pending)),
+        thread_ts=thread_ts,
+    )
+    await runner.resume_investigation(incident_id, decision)
+    log.info("slack.approval_handled", incident_id=incident_id, user=user, approved=approved)
+
+
+async def handle_slash_command(form: dict[str, str]) -> dict[str, Any]:
+    """`/ir <question>` — synchronous ack, background investigation."""
+    text = clean_text(form.get("text", ""))
+    channel = form.get("channel_id", "")
+    user = form.get("user_id", "")
+
+    if not text:
+        return {
+            "response_type": "ephemeral",
+            "text": "Usage: `/ir <what to investigate>` — e.g. `/ir suspicious login from 203.0.113.7`",
+        }
+
+    async def _start() -> None:
+        record = await runner.start_investigation(
+            question=text,
+            alert={"title": text[:200], "reported_by": user, "raw": text},
+            source="slack",
+            slack_channel=channel,
+        )
+        ts = await notifier.post(
+            channel,
+            text=f"Investigating: {record['title']}",
+            blocks_payload=blocks.acknowledgement(record["id"], record["title"]),
+        )
+        if ts:
+            await incidents.attach_slack_thread(record["id"], channel, ts)
+
+    _spawn(_start())
+    return {"response_type": "in_channel", "text": f":mag: Starting investigation: _{text[:150]}_"}
+
+
+def slack_enabled() -> bool:
+    settings = get_settings()
+    return settings.slack_enabled and bool(settings.slack_bot_token)
