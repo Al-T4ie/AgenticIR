@@ -380,6 +380,61 @@ async def test_revision_reuses_the_thread_and_steers_the_re_run(monkeypatch):
     assert payload["alert"]["follow_up_notes"][-1]["note"] == "host is a build agent"
 
 
+async def test_a_revision_is_labelled_even_when_it_stops_for_approval(monkeypatch):
+    """A re-assessment that pauses on the HITL gate must still announce itself,
+    or the new approval prompt reads as a duplicate of the first."""
+    from app.services import runner
+
+    said: list[str] = []
+
+    async def fake_emit(incident_id, text, *, context=""):  # noqa: ARG001
+        said.append(text)
+
+    from app.slack import progress as progress_module
+
+    monkeypatch.setattr(progress_module, "emit", fake_emit)
+
+    await runner._label_revision("INC-1", {"revision": 2})
+    assert said and "revision 2" in said[0]
+
+    said.clear()
+    await runner._label_revision("INC-1", {"revision": 0})
+    assert said == []
+
+
+# ── Planning hygiene ─────────────────────────────────────────────────────────
+def test_one_specialist_is_not_dispatched_twice_in_a_round():
+    """Seen live: three identical `behavioral` agents in one round, three times
+    the cost for near-identical findings. Objectives merge; the agent runs once."""
+    from app.graph.nodes.supervisor import PlannedTask, _merge_duplicates
+
+    merged = _merge_duplicates(
+        [
+            PlannedTask(specialist="behavioral", objective="map the beacon interval"),
+            PlannedTask(specialist="triage", objective="assess the alert"),
+            PlannedTask(specialist="behavioral", objective="check for lateral movement"),
+            PlannedTask(specialist="behavioral", objective="map the beacon interval"),
+        ]
+    )
+
+    assert [t.specialist for t in merged] == ["behavioral", "triage"]
+    behavioral = merged[0].objective
+    # Both distinct questions survive; the repeated one is not duplicated.
+    assert "map the beacon interval" in behavioral
+    assert "check for lateral movement" in behavioral
+    assert behavioral.count("map the beacon interval") == 1
+
+
+def test_distinct_specialists_are_left_alone():
+    from app.graph.nodes.supervisor import PlannedTask, _merge_duplicates
+
+    tasks = [
+        PlannedTask(specialist="triage", objective="a"),
+        PlannedTask(specialist="enrichment", objective="b"),
+    ]
+    assert [t.objective for t in _merge_duplicates(tasks)] == ["a", "b"]
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _async(value: Any):
     async def _coro():
