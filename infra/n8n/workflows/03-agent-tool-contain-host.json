@@ -1,0 +1,88 @@
+{
+  "name": "AgenticIR — tool: contain_host (SIMULATED)",
+  "meta": {
+    "description": "Exposed to the agents as the `contain_host` tool. SIMULATES host isolation and posts a confirmation to Slack, so the approve→execute loop closes visibly without touching real systems. Swap the 'Simulate isolation' node for your EDR's API call when you go live."
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agentic-ir/contain-host",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "tool-webhook",
+      "name": "Agent action call",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-240, 300],
+      "webhookId": "agentic-ir-contain-host",
+      "notes": "Header Auth credential = Authorization: Bearer <N8N_WEBHOOK_TOKEN>"
+    },
+    {
+      "parameters": {
+        "jsCode": "// The executor sends { incident_id, input: { action, target, ...tool_args } }.\nconst body = $input.first().json.body ?? $input.first().json;\nconst input = body.input ?? {};\n\nreturn [{\n  json: {\n    incident_id: body.incident_id ?? 'unknown',\n    action: input.action ?? 'isolate_host',\n    target: input.target ?? '',\n    reason: input.reason ?? input.justification ?? '',\n  },\n}];"
+      },
+      "id": "parse",
+      "name": "Parse action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-20, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── SIMULATION ─────────────────────────────────────────────────────────\n// Replace this node with your real containment call when going live, e.g.\n//   CrowdStrike : POST /devices/entities/devices-actions/v2?action_name=contain\n//   Defender    : POST /api/machines/{id}/isolate\n//   Entra ID    : PATCH /users/{id}  { accountEnabled: false }\n//   Palo Alto   : add address to a dynamic block list\n//\n// Everything below fabricates a plausible success response. It is marked\n// simulated:true so the record never claims a real action was taken.\nconst { incident_id, action, target, reason } = $input.first().json;\n\nconst ticket = 'CONTAIN-' + String(Math.abs(\n  [...(incident_id + target)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7)\n) % 100000).padStart(5, '0');\n\nreturn [{\n  json: {\n    simulated: true,\n    status: 'success',\n    action,\n    target,\n    reason,\n    incident_id,\n    containment_id: ticket,\n    isolated_at: new Date().toISOString(),\n    network_access: action === 'isolate_host' ? 'blocked except management' : 'unchanged',\n    reversible_via: 'lift_containment with containment_id ' + ticket,\n    note: 'SIMULATED action — no real system was modified.',\n  },\n}];"
+      },
+      "id": "simulate",
+      "name": "Simulate isolation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.SLACK_BOT_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json; charset=utf-8" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $env.SLACK_DEFAULT_CHANNEL || '#incident-response', text: ':shield: [SIMULATED] Containment executed — ' + $json.action + ' on ' + $json.target, blocks: [ { type: 'section', text: { type: 'mrkdwn', text: ':shield: *[SIMULATED] Containment executed*\\n*' + $json.action + '* → `' + $json.target + '`' } }, { type: 'context', elements: [ { type: 'mrkdwn', text: '`' + $json.incident_id + '` · ref `' + $json.containment_id + '` · network: ' + $json.network_access + ' · _no real system was modified_' } ] } ] }) }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "notify-slack",
+      "name": "Confirm in Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [420, 300],
+      "onError": "continueRegularOutput",
+      "notes": "Set SLACK_BOT_TOKEN in the n8n environment. Falls through on failure so the tool still returns."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($('Simulate isolation').first().json) }}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Return to agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [640, 300]
+    }
+  ],
+  "connections": {
+    "Agent action call": { "main": [[{ "node": "Parse action", "type": "main", "index": 0 }]] },
+    "Parse action": { "main": [[{ "node": "Simulate isolation", "type": "main", "index": 0 }]] },
+    "Simulate isolation": { "main": [[{ "node": "Confirm in Slack", "type": "main", "index": 0 }]] },
+    "Confirm in Slack": { "main": [[{ "node": "Return to agent", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveExecutionProgress": true },
+  "pinData": {}
+}
