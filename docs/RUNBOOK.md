@@ -77,7 +77,7 @@ make coolify-redeploy      # rebuild and restart the existing resource
 ```
 
 **Base images** (n8n, Postgres, Redis) — pinned in
-`infra/coolify/docker-compose.coolify.yml`. Change the tag, commit, deploy.
+`docker-compose.coolify.yml`. Change the tag, commit, deploy.
 Read the Postgres release notes before crossing a major version; a major upgrade
 needs a dump/restore, not a tag bump.
 
