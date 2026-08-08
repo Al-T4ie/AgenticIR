@@ -10,9 +10,10 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.graph import llm, prompts
+from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
 from app.observability import NODE_DURATION, concise_error, get_logger
 from app.tools.builtin import builtin_tools
@@ -58,6 +59,8 @@ class ReportedFinding(BaseModel):
 class SpecialistReport(BaseModel):
     findings: list[ReportedFinding] = Field(default_factory=list)
     gaps: str = Field(default="", description="What could not be determined")
+
+    _coerce = field_validator("findings", mode="before")(coerce_json_list)
 
 
 def _tools() -> list:
