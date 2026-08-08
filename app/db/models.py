@@ -41,6 +41,10 @@ class Incident(Base):
     findings: Mapped[list[Any]] = mapped_column(JSON, default=list)
     timeline: Mapped[list[Any]] = mapped_column(JSON, default=list)
     containment_actions: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # What was actually run, as opposed to what was proposed. This is the
+    # audit answer to "did anything touch production?" and must survive on the
+    # record, not only inside graph state.
+    executed_actions: Mapped[list[Any]] = mapped_column(JSON, default=list)
     errors: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
     slack_channel: Mapped[str] = mapped_column(String(64), default="")
@@ -72,6 +76,7 @@ class Incident(Base):
             "findings": self.findings or [],
             "timeline": self.timeline or [],
             "containment_actions": self.containment_actions or [],
+            "executed_actions": self.executed_actions or [],
             "errors": self.errors or [],
             "slack_channel": self.slack_channel,
             "slack_thread_ts": self.slack_thread_ts,
