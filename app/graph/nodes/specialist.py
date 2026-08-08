@@ -7,6 +7,7 @@ fan-out safe: concurrent specialists never contend for the same state slot.
 
 from __future__ import annotations
 
+import time
 from typing import Any, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -15,7 +16,8 @@ from pydantic import BaseModel, Field, field_validator
 from app.graph import llm, prompts
 from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
-from app.observability import NODE_DURATION, concise_error, get_logger
+from app.observability import ACTIVE_SPECIALISTS, NODE_DURATION, concise_error, get_logger
+from app.slack import progress
 from app.tools.builtin import builtin_tools
 from app.tools.n8n import n8n_tools
 
@@ -121,9 +123,14 @@ async def specialist_node(payload: SpecialistPayload) -> dict[str, Any]:
         ]
     )
 
+    incident_id = payload["incident_id"]
+    await progress.specialist_started(incident_id, name, payload["objective"])
+    started = time.monotonic()
+
     with NODE_DURATION.labels(node=f"specialist:{name}").time():
+        ACTIVE_SPECIALISTS.labels(specialist=name).inc()
         try:
-            history = await _run_tool_loop(system, task, payload["incident_id"])
+            history = await _run_tool_loop(system, task, incident_id)
             history.append(
                 HumanMessage(
                     content=(
@@ -136,6 +143,7 @@ async def specialist_node(payload: SpecialistPayload) -> dict[str, Any]:
             report = await llm.structured("specialist", SpecialistReport, history)
         except Exception as exc:
             log.error("specialist.failed", specialist=name, error=str(exc))
+            await progress.specialist_failed(incident_id, name, concise_error(exc))
             return {
                 "errors": [f"{name}: {concise_error(exc)}"],
                 "timeline": [
@@ -146,6 +154,8 @@ async def specialist_node(payload: SpecialistPayload) -> dict[str, Any]:
                     }
                 ],
             }
+        finally:
+            ACTIVE_SPECIALISTS.labels(specialist=name).dec()
 
     findings = [
         {
@@ -156,12 +166,15 @@ async def specialist_node(payload: SpecialistPayload) -> dict[str, Any]:
         for f in report.findings
     ]
 
+    elapsed = time.monotonic() - started
     log.info(
         "specialist.completed",
-        incident_id=payload["incident_id"],
+        incident_id=incident_id,
         specialist=name,
         findings=len(findings),
+        seconds=round(elapsed, 1),
     )
+    await progress.specialist_finished(incident_id, name, len(findings), elapsed, report.gaps)
 
     return {
         "findings": findings,
