@@ -17,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.observability import get_logger
-from app.services import incidents, runner
+from app.services import incidents, runner, timeline
 
 log = get_logger(__name__)
 
@@ -107,12 +107,19 @@ async def incident_detail(
         raise HTTPException(status_code=404, detail=f"Unknown incident {incident_id}")
 
     pending = [a for a in record.get("containment_actions", []) if a.get("requires_approval")]
+    try:
+        chart = timeline.build(record.get("timeline", []))
+    except Exception as exc:  # noqa: BLE001 — the page matters more than the picture
+        log.warning("ui.timeline_chart_failed", incident_id=incident_id, error=str(exc))
+        chart = {"empty": True, "lanes": [], "runs": [], "ticks": [], "total": 0.0}
+
     return templates.TemplateResponse(
         request,
         "incident.html",
         {
             "incident": record,
             "pending_actions": pending,
+            "chart": chart,
             "can_approve": record["status"] == "awaiting_approval",
         },
     )
