@@ -354,7 +354,7 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
     return {"candidates": len(mine), "actions": actions, "dispositions": counts}
 
 
-_ACTED = {"investigate", "update_incident", "answer", "blocked_on_approval", "queued"}
+_ACTED = {"investigate", "update_incident", "answer", "queued", "queued_for_approval"}
 
 
 async def _report_decisions(channel: str, decisions: list[dict[str, str]]) -> None:
@@ -367,6 +367,10 @@ async def _report_decisions(channel: str, decisions: list[dict[str, str]]) -> No
     what the model thought it was looking at.
     """
     if not decisions or not get_settings().slack_poll_report_decisions:
+        return
+    # A sweep that ignored everything is the normal case, several times an hour.
+    # Announcing it is pure noise; the metrics record that it ran.
+    if not any(d["applied"] in _ACTED for d in decisions):
         return
 
     lines = []
@@ -561,31 +565,17 @@ async def _act(channel: str, candidate: dict[str, Any], action: str, incident_id
             )
             return "update_incident"
 
-        if outcome == "queued":
+        if outcome in {"queued", "queued_for_approval"}:
             # Still running: acknowledge now, apply on a later sweep.
             if await slack_watch.defer(channel, ts):
                 await notifier.post(
                     channel,
-                    text="Noted — I'll fold that in once the current pass finishes.",
+                    text=":inbox_tray: Noted — folding in when this settles.",
                     thread_ts=thread,
                 )
-                return "queued"
+                return outcome
             await slack_watch.release(channel, ts, disposition="abandoned")
             return "ignore"
-
-        if outcome == "awaiting_approval":
-            await notifier.post(
-                channel,
-                text=(
-                    ":pause_button: Noted, but `"
-                    + incident_id
-                    + "` is waiting on a containment decision. "
-                    "Decide on the pending actions first and I'll re-assess with this."
-                ),
-                thread_ts=thread,
-            )
-            await slack_watch.release(channel, ts, disposition="blocked_on_approval")
-            return "blocked_on_approval"
 
         await slack_watch.release(channel, ts, disposition="ignore")
         return "ignore"
