@@ -14,6 +14,7 @@ from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
 from app.graph.state import IncidentState
 from app.observability import TOOL_CALLS, concise_error, get_logger
+from app.slack import progress
 from app.tools.n8n import call_n8n_webhook
 
 log = get_logger(__name__)
@@ -112,6 +113,7 @@ async def containment_node(state: IncidentState) -> dict[str, Any]:
         actions=len(actions),
         needing_approval=sum(1 for a in actions if a["requires_approval"]),
     )
+    await progress.containment_planned(str(state.get("incident_id", "")), actions)
 
     return {
         "containment_actions": actions,
@@ -230,6 +232,8 @@ async def execute_node(state: IncidentState) -> dict[str, Any]:
             errors.append(
                 f"executor: {action['action']} on {action['target']} failed: {concise_error(exc)}"
             )
+
+    await progress.executed(str(state.get("incident_id", "")), len(executed), len(errors))
 
     return {
         "executed_actions": executed,
