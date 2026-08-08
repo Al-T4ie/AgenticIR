@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -46,6 +47,14 @@ async def init_db() -> None:
 
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # create_all only creates missing *tables*, never missing columns, so a
+        # deployment that predates a new field would keep running against the old
+        # shape and fail on first write. Additive columns are reconciled here
+        # until the projection schema is churning enough to justify Alembic.
+        for column, ddl in (("executed_actions", "JSON DEFAULT '[]'::json"),):
+            await conn.execute(
+                text(f"ALTER TABLE incidents ADD COLUMN IF NOT EXISTS {column} {ddl}")
+            )
     log.info("db.ready")
 
 
