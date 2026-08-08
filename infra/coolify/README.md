@@ -72,7 +72,7 @@ the script prints the response body and tells you to create the resource once by
 hand:
 
 > Project → **+ New** → **Docker Compose** (from a Git repository)
-> Compose path: `/infra/coolify/docker-compose.coolify.yml`
+> Compose path: `/docker-compose.coolify.yml`
 
 Re-run the script afterwards — it finds the resource by name and only syncs
 environment variables and deploys, which are the stable parts of the API.
