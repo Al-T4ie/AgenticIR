@@ -73,6 +73,7 @@ async def save_state(incident_id: str, state: dict[str, Any], status: str | None
         row.findings = state.get("findings", row.findings) or []
         row.timeline = state.get("timeline", row.timeline) or []
         row.containment_actions = state.get("containment_actions", row.containment_actions) or []
+        row.executed_actions = state.get("executed_actions", row.executed_actions) or []
         row.errors = state.get("errors", row.errors) or []
         row.updated_at = datetime.now(UTC)
 
