@@ -46,6 +46,27 @@ def _findings_digest(findings: list[dict[str, Any]], limit: int = 40) -> str:
     return "\n".join(lines)
 
 
+def _merge_duplicates(tasks: list[PlannedTask]) -> list[PlannedTask]:
+    """Fold repeats of one specialist in a single round into one task.
+
+    Observed in production: the supervisor dispatched `behavioral` three times in
+    the same round. Each copy gets the same prompt and the same alert, so they
+    largely duplicate each other's work — three agents' cost and eleven
+    near-identical findings for the reviewer to wade through. Merging the
+    objectives keeps every question that was asked while running the specialist
+    once, which is strictly better than dropping the extras.
+    """
+    merged: dict[str, PlannedTask] = {}
+    for task in tasks:
+        seen = merged.get(task.specialist)
+        if seen is None:
+            merged[task.specialist] = task
+            continue
+        if task.objective.strip() and task.objective.strip() not in seen.objective:
+            seen.objective = f"{seen.objective}\nAlso: {task.objective.strip()}"
+    return list(merged.values())
+
+
 async def supervisor_node(state: IncidentState) -> dict[str, Any]:
     settings = get_settings()
     current_round = int(state.get("round", 0)) + 1
@@ -87,9 +108,8 @@ async def supervisor_node(state: IncidentState) -> dict[str, Any]:
             reasoning=f"Supervisor LLM failed ({exc}); using fallback plan.", tasks=fallback
         )
 
-    valid = [t for t in plan.tasks if t.specialist in ALL_SPECIALISTS][
-        : settings.max_parallel_specialists
-    ]
+    known = [t for t in plan.tasks if t.specialist in ALL_SPECIALISTS]
+    valid = _merge_duplicates(known)[: settings.max_parallel_specialists]
     dropped = len(plan.tasks) - len(valid)
     if dropped > 0:
         log.warning("supervisor.tasks_dropped", count=dropped, round=current_round)
