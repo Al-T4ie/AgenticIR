@@ -108,6 +108,8 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
         graph = get_graph()
         config = _config(thread_id)
         try:
+            # payload None resumes from the stored checkpoint without injecting
+            # new input — how an interrupted run is picked back up.
             await graph.ainvoke(payload, config=config)
         except Exception as exc:
             log.exception("runner.failed", incident_id=incident_id, error=str(exc))
@@ -185,3 +187,57 @@ async def drain(timeout: float = 30.0) -> None:  # noqa: ASYNC109
         return
     log.info("runner.draining", in_flight=len(_tasks))
     await asyncio.wait(set(_tasks), timeout=timeout)
+
+
+# ── Recovery after a restart ─────────────────────────────────────────────────
+# The checkpointer makes state durable, but nothing restarts the *execution*.
+# A run interrupted mid-flight (deploy, OOM, crash) otherwise sits in "running"
+# for ever with an intact checkpoint that nobody picks up — durable in storage,
+# abandoned in practice.
+_RECOVERY_LOCK_KEY = 8_291_774_120_355_001
+
+
+async def recover_interrupted(limit: int = 25) -> int:
+    """Resume investigations left mid-flight by a previous process.
+
+    Guarded by a Postgres advisory lock so that with several web workers exactly
+    one performs recovery — otherwise every worker would resume the same thread
+    concurrently and duplicate the work.
+    """
+    from sqlalchemy import text
+
+    from app.db.session import session_scope
+
+    async with session_scope() as session:
+        got = await session.execute(
+            text("SELECT pg_try_advisory_lock(:k)"), {"k": _RECOVERY_LOCK_KEY}
+        )
+        if not got.scalar():
+            log.info("runner.recovery_skipped", reason="another worker holds the lock")
+            return 0
+
+    stale = await incidents.list_incidents(limit=limit, status="running")
+    if not stale:
+        return 0
+
+    resumed = 0
+    for row in stale:
+        thread_id = row["thread_id"]
+        try:
+            snapshot = await get_graph().aget_state(_config(thread_id))
+        except Exception as exc:
+            log.warning("runner.recovery_state_failed", incident_id=row["id"], error=str(exc))
+            continue
+
+        # `next` names the node the graph would run. Empty means it actually
+        # finished and only the projection is stale, so just correct the record.
+        if not list(snapshot.next or []):
+            await incidents.save_state(row["id"], dict(snapshot.values or {}), status="completed")
+            continue
+
+        log.info("runner.recovering", incident_id=row["id"], next=list(snapshot.next))
+        _spawn(_execute(thread_id, row["id"], None))
+        resumed += 1
+
+    log.info("runner.recovery_complete", resumed=resumed, examined=len(stale))
+    return resumed
