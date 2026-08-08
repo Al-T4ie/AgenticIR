@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import get_settings
 from app.graph import llm, prompts
+from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
 from app.graph.state import ALL_SPECIALISTS, IncidentState
 from app.observability import get_logger
@@ -28,6 +29,8 @@ class Plan(BaseModel):
     tasks: list[PlannedTask] = Field(
         default_factory=list, description="Specialists to run in parallel. Empty means done."
     )
+
+    _coerce = field_validator("tasks", mode="before")(coerce_json_list)
 
 
 def _findings_digest(findings: list[dict[str, Any]], limit: int = 40) -> str:
