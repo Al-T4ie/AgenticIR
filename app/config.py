@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     slack_poll_lookback_minutes: int = 60
     # Incidents updated within this window keep having their threads re-read.
     slack_poll_thread_window_hours: int = 24
+    # Publish what each sweep read and why it chose what it chose. The
+    # classifier is the most fallible part of the loop; hiding its reasoning
+    # makes a wrong call indistinguishable from having seen nothing.
+    slack_poll_report_decisions: bool = True
 
     # ── n8n ──
     n8n_enabled: bool = False
