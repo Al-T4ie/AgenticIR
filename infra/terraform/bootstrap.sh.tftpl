@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Host bootstrap: mount the data volume, harden, install Coolify.
+# Rendered by Terraform and dropped at /usr/local/sbin/agenticir-bootstrap.sh.
+#
+#   progress:  tail -f /var/log/agenticir-bootstrap.log
+#   success:   /var/lib/agenticir/bootstrap-complete
+#   failure:   /var/lib/agenticir/bootstrap-failed
+set -euo pipefail
+exec > >(tee -a /var/log/agenticir-bootstrap.log) 2>&1
+
+echo "=== agenticir bootstrap starting $(date -Is) ==="
+mkdir -p /var/lib/agenticir
+rm -f /var/lib/agenticir/bootstrap-failed
+
+fail() {
+  echo "!!! $2"
+  echo "$1" > /var/lib/agenticir/bootstrap-failed
+  exit 1
+}
+
+# ── 1. Persistent data volume ────────────────────────────────────────────────
+%{ if volume_enabled ~}
+DEVICE="${volume_device}"
+echo "--- waiting for data volume $DEVICE"
+for _ in $(seq 1 60); do
+  [ -b "$DEVICE" ] && break
+  sleep 5
+done
+
+# Never continue without the volume: Coolify would put its state on the
+# ephemeral root disk and the next rebuild would silently lose every incident.
+[ -b "$DEVICE" ] || fail "volume-missing" "data volume $DEVICE never appeared after 5 minutes"
+
+if ! blkid "$DEVICE" >/dev/null 2>&1; then
+  echo "--- formatting $DEVICE as ext4 (first boot)"
+  mkfs.ext4 -F -L agenticir-data "$DEVICE"
+else
+  echo "--- $DEVICE already carries a filesystem, reusing it"
+fi
+
+mkdir -p /data
+grep -q " /data " /etc/fstab || echo "$DEVICE /data ext4 discard,nofail,defaults 0 2" >> /etc/fstab
+mount -a
+mountpoint -q /data || fail "volume-mount-failed" "/data failed to mount"
+echo "--- /data mounted: $(df -h /data | tail -1)"
+%{ else ~}
+mkdir -p /data
+echo "--- data volume disabled; /data lives on the root disk"
+%{ endif ~}
+
+# ── 2. Swap ──────────────────────────────────────────────────────────────────
+%{ if swap_size_gb > 0 ~}
+if [ ! -f /swapfile ]; then
+  echo "--- creating ${swap_size_gb}G swapfile"
+  fallocate -l ${swap_size_gb}G /swapfile ||
+    dd if=/dev/zero of=/swapfile bs=1M count=$(( ${swap_size_gb} * 1024 ))
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+%{ endif ~}
+
+# ── 3. Host firewall ─────────────────────────────────────────────────────────
+# Docker publishes ports by writing iptables rules that bypass ufw's INPUT
+# chain, so the Hetzner cloud firewall is the real boundary. ufw is defence in
+# depth for anything binding the host network directly.
+echo "--- configuring ufw"
+ufw --force reset >/dev/null
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 80/tcp comment 'http'
+ufw allow 443/tcp comment 'https'
+%{ for cidr in admin_ips ~}
+ufw allow from ${cidr} to any port 22 proto tcp comment 'ssh admin'
+ufw allow from ${cidr} to any port 8000 proto tcp comment 'coolify dashboard'
+ufw allow from ${cidr} to any port 6001 proto tcp comment 'coolify realtime'
+ufw allow from ${cidr} to any port 6002 proto tcp comment 'coolify terminal'
+%{ endfor ~}
+ufw --force enable
+ufw status verbose
+
+systemctl enable --now fail2ban || true
+sysctl --system || true
+
+# ── 4. Coolify ───────────────────────────────────────────────────────────────
+%{ if install_coolify ~}
+echo "--- installing Coolify (this installs Docker too)"
+# The installer is idempotent and safe to re-run on an existing host.
+curl -fsSL https://cdn.coollabs.io/coolify/install.sh -o /tmp/coolify-install.sh ||
+  fail "coolify-download-failed" "could not download the Coolify installer"
+chmod +x /tmp/coolify-install.sh
+bash /tmp/coolify-install.sh || fail "coolify-install-failed" "Coolify installation failed"
+
+echo "--- waiting for Coolify to answer on :8000"
+for _ in $(seq 1 60); do
+  curl -fsS -o /dev/null http://127.0.0.1:8000 && { echo "--- Coolify is up"; break; }
+  sleep 10
+done
+%{ else ~}
+echo "--- install_coolify=false; installing Docker only"
+curl -fsSL https://get.docker.com | sh
+systemctl enable --now docker
+%{ endif ~}
+
+# ── 5. Nightly local backup of /data ─────────────────────────────────────────
+# Pair this with Hetzner volume snapshots or an off-site rsync for real DR;
+# a backup living on the same volume as the data is only half a backup.
+install -d -m 0750 /data/backups
+
+cat > /usr/local/sbin/agenticir-backup.sh <<'BACKUP_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+STAMP=$(date +%Y%m%d-%H%M%S)
+DEST=/data/backups
+mkdir -p "$DEST"
+
+# Dump every running Postgres container Coolify manages.
+for cid in $(docker ps --format '{{.ID}} {{.Image}}' | grep -Ei 'postgres|pgvector' | awk '{print $1}'); do
+  user=$(docker exec "$cid" printenv POSTGRES_USER 2>/dev/null || echo postgres)
+  if docker exec "$cid" pg_dumpall -U "$user" 2>/dev/null | gzip > "$DEST/pg-$cid-$STAMP.sql.gz"; then
+    echo "backed up $cid"
+  else
+    rm -f "$DEST/pg-$cid-$STAMP.sql.gz"
+    echo "WARN: pg_dumpall failed for $cid" >&2
+  fi
+done
+
+tar czf "$DEST/coolify-$STAMP.tar.gz" -C /data coolify 2>/dev/null || true
+
+find "$DEST" -type f -mtime +14 -delete
+BACKUP_EOF
+chmod 0750 /usr/local/sbin/agenticir-backup.sh
+
+cat > /etc/systemd/system/agenticir-backup.service <<'UNIT_EOF'
+[Unit]
+Description=AgenticIR local backup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/agenticir-backup.sh
+UNIT_EOF
+
+cat > /etc/systemd/system/agenticir-backup.timer <<'TIMER_EOF'
+[Unit]
+Description=Nightly AgenticIR backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER_EOF
+
+systemctl daemon-reload
+systemctl enable --now agenticir-backup.timer || true
+
+# ── 6. Weekly image prune so the volume does not silently fill ───────────────
+cat > /etc/cron.weekly/agenticir-docker-prune <<'PRUNE_EOF'
+#!/bin/sh
+# Images and build cache only — never volumes, which hold Postgres data.
+docker image prune -af --filter "until=336h" >/dev/null 2>&1 || true
+docker builder prune -af --filter "until=336h" >/dev/null 2>&1 || true
+PRUNE_EOF
+chmod +x /etc/cron.weekly/agenticir-docker-prune
+
+date -Is > /var/lib/agenticir/bootstrap-complete
+echo "=== agenticir bootstrap finished $(date -Is) ==="
