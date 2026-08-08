@@ -16,7 +16,7 @@ from langgraph.types import Command
 from app.config import get_settings
 from app.graph.builder import get_graph
 from app.graph.state import new_state
-from app.observability import RUNS_STARTED, concise_error, get_logger
+from app.observability import ACTIVE_RUNS, RUNS_STARTED, concise_error, get_logger
 from app.services import incidents
 
 log = get_logger(__name__)
@@ -102,11 +102,96 @@ async def resume_investigation(incident_id: str, decision: dict[str, Any]) -> di
     return record
 
 
+async def follow_up_investigation(
+    incident_id: str,
+    note: str,
+    *,
+    reported_by: str = "",
+) -> str:
+    """Fold late-arriving information into an incident and re-assess it.
+
+    Intelligence does not stop arriving when a report is posted — an analyst
+    adds context, a second alert lands, someone identifies the host. Rather than
+    opening a disconnected incident, this re-enters the *same* graph thread. The
+    checkpointer still holds the previous findings, and `findings`/`timeline`
+    are additive, so the re-run builds on what is already known instead of
+    starting from nothing, and the revised report lands in the same Slack thread.
+
+    Returns the disposition: "revising", "queued", "awaiting_approval" or
+    "unknown" — callers use it to word their reply.
+    """
+    record = await incidents.get_incident(incident_id)
+    if record is None:
+        return "unknown"
+
+    status = record["status"]
+    if status == "running":
+        # A thread cannot be invoked while a run is mid-flight; the caller tells
+        # the analyst it was noted, and the next sweep picks it up once idle.
+        return "queued"
+    if status == "awaiting_approval":
+        # Re-planning underneath a pending approval would invalidate the very
+        # actions the human is deciding on.
+        return "awaiting_approval"
+
+    thread_id = record["thread_id"]
+    snapshot = await get_graph().aget_state(_config(thread_id))
+    values = dict(snapshot.values or {})
+
+    revision = int(values.get("revision", 0) or 0) + 1
+    alert = dict(values.get("alert", {}) or {})
+    notes = list(alert.get("follow_up_notes", []) or [])
+    notes.append({"at": _now(), "by": reported_by, "note": note})
+
+    attribution = f"<@{reported_by}>" if reported_by else "an analyst"
+    await incidents.set_status(incident_id, "running")
+    RUNS_STARTED.labels(source="slack-followup").inc()
+
+    _spawn(
+        _execute(
+            thread_id,
+            incident_id,
+            {
+                "alert": {**alert, "follow_up_notes": notes},
+                "question": f"{values.get('question', '')}\n\nFOLLOW-UP: {note}".strip(),
+                "plan": [],
+                "approval": {},
+                "needs_more_work": True,
+                "revision": revision,
+                # Consumed by the supervisor on the first round, so the re-run
+                # chases the new information rather than repeating itself.
+                "critic_feedback": (
+                    f"New information arrived from {attribution} after the previous "
+                    f"assessment was published: {note}\n\n"
+                    "Re-evaluate the incident in light of it. Investigate what this "
+                    "changes; do not simply repeat the earlier conclusions."
+                ),
+                "timeline": [
+                    {
+                        "at": _now(),
+                        "actor": f"human:{reported_by}" if reported_by else "channel",
+                        "event": f"Revision {revision} triggered by new information: {note[:300]}",
+                    }
+                ],
+            },
+        )
+    )
+    log.info("runner.follow_up", incident_id=incident_id, revision=revision, by=reported_by)
+    return "revising"
+
+
+def _now() -> str:
+    from app.graph.nodes.intake import now_iso
+
+    return now_iso()
+
+
 async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
     """Drive the graph to its next stopping point: interrupt, completion, or error."""
     async with _sem():
         graph = get_graph()
         config = _config(thread_id)
+        ACTIVE_RUNS.inc()
         try:
             # payload None resumes from the stored checkpoint without injecting
             # new input — how an interrupted run is picked back up.
@@ -120,6 +205,8 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
             )
             await _notify(incident_id, "failed")
             return
+        finally:
+            ACTIVE_RUNS.dec()
 
         snapshot = await graph.aget_state(config)
         state = dict(snapshot.values or {})
@@ -131,6 +218,17 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
             log.info("runner.awaiting_approval", incident_id=incident_id)
         else:
             await incidents.save_state(incident_id, state, status="completed")
+            revision = int(state.get("revision", 0) or 0)
+            if revision:
+                # Label it, so the thread reads as a correction rather than a
+                # duplicate report that silently contradicts the first one.
+                from app.slack import progress
+
+                await progress.emit(
+                    incident_id,
+                    f":arrows_counterclockwise: *Revised assessment — revision {revision}*\n"
+                    "New information was folded into the original investigation.",
+                )
             await _notify(incident_id, "completed")
             log.info(
                 "runner.completed",
