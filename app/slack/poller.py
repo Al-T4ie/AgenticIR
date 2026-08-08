@@ -53,12 +53,19 @@ request to look into something that is NOT already covered by a known incident.
 - "update_incident": the message adds or corrects information relevant to a \
 known incident (a hostname is identified, activity is confirmed benign, the \
 same behaviour is seen elsewhere, an IOC is added). Set incident_id.
-- "answer": the message asks a question about a known incident. Set incident_id.
+- "answer": the message wants information about a known incident. This covers \
+questions ("what was the C2 domain?", "is it contained?") and equally requests \
+and instructions ("give me the timeline", "show me what changed", "summarise \
+this for the bridge", "diagram the sequence"). Phrasing as a command rather \
+than a question does not make it a new incident. Set incident_id.
 - "ignore": chatter, acknowledgements, thanks, coordination, duplicates, \
 anything already handled, or anything not about security.
 
 Rules:
 - Prefer "ignore". Acting wrongly costs an analyst's attention; staying quiet costs nothing.
+- "investigate" means there is a *new security event* to look into. A request \
+about work already done is "answer", however it is worded. Opening an \
+investigation into someone asking for a summary is always wrong.
 - Prefer "update_incident" over "investigate" when the message plainly concerns \
 an incident already listed — a follow-up belongs on the existing thread.
 - A message already inside an incident's thread almost always belongs to that \
