@@ -1,0 +1,33 @@
+{
+  "title": "Repeated authentication failures then success for service account",
+  "rule_name": "IDP-0233: Password spray pattern followed by successful sign-in",
+  "severity": "high",
+  "detected_at": "2026-08-08T03:47:12Z",
+  "source_system": "Entra ID Protection",
+  "user": {
+    "username": "svc-backup",
+    "display_name": "Backup Service Account",
+    "department": "Infrastructure",
+    "privileged": true,
+    "mfa_registered": false,
+    "account_type": "service"
+  },
+  "authentication": {
+    "failed_attempts": 47,
+    "window_minutes": 12,
+    "successful_at": "2026-08-08T03:47:12Z",
+    "source_ip": "45.33.32.156",
+    "user_agent": "python-requests/2.31.0",
+    "conditional_access": "excluded — service account exemption",
+    "prior_sign_in_locations": ["10.2.0.0/16 (datacentre)"]
+  },
+  "context": {
+    "change_window": "Infrastructure team had a scheduled backup migration 03:00-05:00",
+    "change_ticket": "CHG-8841",
+    "change_ticket_details_available": false,
+    "oncall_engineer_contacted": false,
+    "post_auth_activity": "No resource access recorded in the 30 minutes after sign-in"
+  },
+  "detail": "A privileged service account with no MFA saw 47 failed sign-ins over 12 minutes from 45.33.32.156, followed by one success. The address is external and the user agent is a scripting library, but a scheduled maintenance window (CHG-8841) overlaps exactly, the change ticket's contents are not available to the detection pipeline, and no post-authentication resource access was recorded. The on-call engineer has not been reached.",
+  "raw_events": 48
+}
