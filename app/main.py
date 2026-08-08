@@ -40,6 +40,15 @@ async def lifespan(app: FastAPI):
     app.state.ready = True
 
     try:
+        recovered = await runner.recover_interrupted()
+        if recovered:
+            log.info("startup.recovered_runs", count=recovered)
+    except Exception as exc:
+        # Recovery is best-effort: never block startup on it, or one poisoned
+        # checkpoint takes the whole service down.
+        log.error("startup.recovery_failed", error=str(exc))
+
+    try:
         yield
     finally:
         app.state.ready = False
