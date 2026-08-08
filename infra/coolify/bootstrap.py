@@ -614,6 +614,23 @@ def main() -> int:
     resource_uuid = resource["uuid"]
 
     # ── Environment ──
+    # The compose path is only applied at creation, so switching variants (e.g.
+    # bundled n8n -> your own) on an existing resource would otherwise be
+    # silently ignored and keep deploying the old stack.
+    wanted_compose = (
+        args.compose_path if args.compose_path.startswith("/") else f"/{args.compose_path}"
+    )
+    if str(resource.get("docker_compose_location") or "") != wanted_compose:
+        try:
+            client.patch(
+                f"/applications/{resource_uuid}",
+                {"docker_compose_location": wanted_compose},
+                quiet=True,
+            )
+            ok(f"compose path set to {wanted_compose}")
+        except urllib.error.HTTPError as exc:
+            warn(f"could not update the compose path (HTTP {exc.code})")
+
     step("Attaching domains")
     set_compose_domains(client, resource_uuid, args.app_fqdn, args.n8n_fqdn)
 
