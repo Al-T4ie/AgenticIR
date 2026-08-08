@@ -1,0 +1,47 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+dist/
+build/
+
+# ── Secrets & local state ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/*.pub
+secrets/
+.secrets/
+
+# ── Terraform ──
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+terraform.tfvars
+*.auto.tfvars
+!*.tfvars.example
+
+# ── Runtime data ──
+data/
+logs/
+*.log
+.DS_Store
+
+# ── Editors ──
+.idea/
+.vscode/
+*.swp
