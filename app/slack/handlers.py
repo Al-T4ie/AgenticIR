@@ -232,10 +232,13 @@ async def answer_followup(
             [
                 SystemMessage(
                     content=(
-                        "You are answering an analyst's follow-up about a completed "
-                        "investigation. Answer only from the incident record supplied. "
-                        "If the record does not contain the answer, say so plainly and "
-                        "suggest opening a new investigation. Use Slack markdown."
+                        "You are answering an analyst's follow-up about an investigation, "
+                        "mid-incident, in Slack. Answer only from the incident record "
+                        "supplied.\n\n"
+                        "At most three sentences. No preamble, no restating the question, "
+                        "no summary of the incident they already have. If the record does "
+                        "not contain the answer, say exactly that in one line and name the "
+                        "one thing that would settle it. Slack markdown."
                     )
                 ),
                 HumanMessage(content=f"INCIDENT RECORD:\n{context}\n\nQUESTION: {text}"),
