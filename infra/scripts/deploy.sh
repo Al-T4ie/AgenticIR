@@ -84,9 +84,9 @@ for mid in os.environ["MODELS"].split(","):
     ;;
 esac
 
-COMPOSE_PATH="${COMPOSE_PATH:-infra/coolify/docker-compose.coolify.yml}"
+COMPOSE_PATH="${COMPOSE_PATH:-docker-compose.coolify.yml}"
 if [[ -n "${N8N_BASE_URL:-}" ]]; then
-  COMPOSE_PATH="infra/coolify/docker-compose.external-n8n.yml"
+  COMPOSE_PATH="docker-compose.coolify-external-n8n.yml"
   [[ -n "${N8N_WEBHOOK_TOKEN:-}" ]] || {
     echo "Using an external n8n requires N8N_WEBHOOK_TOKEN (any strong random string)." >&2
     echo "  Generate one with: openssl rand -hex 32" >&2
