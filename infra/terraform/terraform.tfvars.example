@@ -1,0 +1,39 @@
+# Copy to terraform.tfvars and edit. Never commit the real file — it is gitignored.
+
+# ── Required ─────────────────────────────────────────────────────────────────
+
+# Hetzner Cloud → Security → API tokens → Generate (Read & Write).
+# Prefer the environment instead of this file: export TF_VAR_hcloud_token=...
+hcloud_token = "your-hetzner-cloud-api-token"
+
+# The public key that gets root SSH access.
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... you@example.com"
+
+# CIDRs allowed to reach SSH and the Coolify dashboard.
+# Find your current address with: curl -s https://ifconfig.me
+admin_ips = ["203.0.113.4/32"]
+
+# ── Recommended ──────────────────────────────────────────────────────────────
+
+# Leave empty to use sslip.io wildcard DNS (no DNS setup needed, still gets
+# real TLS certificates). Set a real domain for production.
+base_domain = ""
+
+project_name = "agenticir"
+environment  = "prod"
+location     = "nbg1" # nbg1/fsn1/hel1 (EU) · ash/hil (US) · sin (APAC)
+
+# cax31 = 8 vCPU ARM / 16 GB — the recommended starting point.
+# Step up to cax41 (16 vCPU / 32 GB) if you plan to run local inference.
+server_type = "cax31"
+
+# GB. Holds Coolify state, Postgres data and n8n workflows. 0 disables it.
+data_volume_size = 50
+
+enable_backups = true
+swap_size_gb   = 4
+timezone       = "UTC"
+
+labels = {
+  owner = "soc-team"
+}
