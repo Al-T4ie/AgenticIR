@@ -7,7 +7,7 @@ import os
 import sys
 
 import structlog
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 from app.config import get_settings
 
@@ -24,6 +24,19 @@ NODE_DURATION = Histogram(
 )
 LLM_CALLS = Counter("agenticir_llm_calls_total", "LLM invocations", ["role", "outcome"])
 TOOL_CALLS = Counter("agenticir_tool_calls_total", "Tool invocations", ["tool", "outcome"])
+
+# Counters answer "how much has run"; these answer "what is running right now",
+# which is the question asked when an investigation feels slow.
+ACTIVE_RUNS = Gauge("agenticir_active_runs", "Investigations executing right now")
+ACTIVE_SPECIALISTS = Gauge(
+    "agenticir_active_specialists", "Specialist agents executing right now", ["specialist"]
+)
+
+# ── Slack channel polling ──
+POLL_CYCLES = Counter("agenticir_slack_poll_cycles_total", "Poll sweeps", ["outcome"])
+POLL_MESSAGES = Counter(
+    "agenticir_slack_poll_messages_total", "Channel messages triaged", ["disposition"]
+)
 
 
 def configure_logging() -> None:
