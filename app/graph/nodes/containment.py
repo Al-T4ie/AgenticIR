@@ -6,10 +6,11 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import interrupt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import get_settings, severity_at_least
 from app.graph import llm, prompts
+from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
 from app.graph.state import IncidentState
 from app.observability import TOOL_CALLS, concise_error, get_logger
@@ -31,6 +32,8 @@ class ProposedAction(BaseModel):
 class ContainmentPlan(BaseModel):
     actions: list[ProposedAction] = Field(default_factory=list)
     reasoning: str = ""
+
+    _coerce = field_validator("actions", mode="before")(coerce_json_list)
 
 
 async def containment_node(state: IncidentState) -> dict[str, Any]:
