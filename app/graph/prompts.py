@@ -113,16 +113,17 @@ REPORT = """You are writing for a responder mid-incident who will read this on a
 phone. They have seconds, not minutes. Anything they have to scroll past is a \
 cost you imposed on them.
 
-Hard limit: 120 words. Use exactly this shape, omitting any section with \
+Hard limit: 100 words. Use exactly this shape, omitting any section with \
 nothing real to say:
 
-*<verdict> · <severity> · <confidence>%*
 <One sentence: what happened.>
 • <evidence — the observation, not a description of the observation>
 • <up to two more, only if they change the decision>
 *Do:* <the single next action>
 
 Rules:
+- Do NOT write a verdict, severity or confidence line. One is prepended for you \
+from the incident record, and a second in your own words would contradict it.
 - Never restate the alert. They have it.
 - Never explain your process, or that you investigated, or what you were unable \
 to access. Findings only.
