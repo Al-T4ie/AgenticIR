@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, Index, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, Index, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -60,6 +60,7 @@ class Incident(Base):
     __table_args__ = (
         Index("ix_incidents_created_at_desc", created_at.desc()),
         Index("ix_incidents_status_severity", "status", "severity"),
+        Index("ix_incidents_slack_thread", "slack_channel", "slack_thread_ts"),
     )
 
     def as_dict(self, *, include_report: bool = True) -> dict[str, Any]:
@@ -86,3 +87,41 @@ class Incident(Base):
         if include_report:
             data["report"] = self.report
         return data
+
+
+class SlackCursor(Base):
+    """How far the channel poller has read in each channel."""
+
+    __tablename__ = "slack_cursors"
+
+    channel: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Slack message timestamps are strings ("1754671234.001900") and sort
+    # lexicographically only by accident of fixed width — compare them as floats.
+    last_ts: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, server_default=func.now()
+    )
+
+
+class SlackSeenMessage(Base):
+    """One row per message the bot has taken responsibility for.
+
+    This is a *claim*, not a log: the poller inserts with ON CONFLICT DO NOTHING
+    and only acts on rows it actually created. That makes the sweep idempotent
+    across restarts, safe to run in more than one worker, and non-overlapping
+    with the Events API path, which claims the same way before handling a
+    mention.
+    """
+
+    __tablename__ = "slack_seen_messages"
+
+    channel: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ts: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # claimed → being worked on · handled → finished · deferred → retry next sweep
+    status: Mapped[str] = mapped_column(String(16), default="claimed", index=True)
+    disposition: Mapped[str] = mapped_column(String(32), default="")
+    incident_id: Mapped[str] = mapped_column(String(64), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
