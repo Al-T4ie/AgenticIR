@@ -76,15 +76,9 @@ def report_message(incident: dict[str, Any], public_base_url: str = "") -> list[
     for chunk in _chunk(report, _MAX_TEXT):
         blocks.append(_section(chunk))
 
-    actions = incident.get("containment_actions", [])
-    if actions:
-        listed = "\n".join(
-            f"• *{a.get('action')}* → `{a.get('target')}`"
-            f"{' :lock: _approval required_' if a.get('requires_approval') else ''}"
-            for a in actions[:10]
-        )
-        blocks.append({"type": "divider"})
-        blocks.append(_section(f"*Proposed actions*\n{listed}"))
+    # Proposed actions are deliberately not repeated here: when any need a human
+    # they are listed on the approval prompt that follows, and printing them
+    # twice is exactly the noise a responder mid-incident does not need.
 
     if public_base_url:
         blocks.append(
