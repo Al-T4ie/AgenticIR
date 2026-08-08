@@ -214,21 +214,12 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
 
         if interrupts:
             await incidents.save_state(incident_id, state, status="awaiting_approval")
+            await _label_revision(incident_id, state)
             await _notify(incident_id, "awaiting_approval", interrupt=interrupts[0])
             log.info("runner.awaiting_approval", incident_id=incident_id)
         else:
             await incidents.save_state(incident_id, state, status="completed")
-            revision = int(state.get("revision", 0) or 0)
-            if revision:
-                # Label it, so the thread reads as a correction rather than a
-                # duplicate report that silently contradicts the first one.
-                from app.slack import progress
-
-                await progress.emit(
-                    incident_id,
-                    f":arrows_counterclockwise: *Revised assessment — revision {revision}*\n"
-                    "New information was folded into the original investigation.",
-                )
+            await _label_revision(incident_id, state)
             await _notify(incident_id, "completed")
             log.info(
                 "runner.completed",
@@ -236,6 +227,26 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
                 severity=state.get("severity"),
                 verdict=state.get("verdict"),
             )
+
+
+async def _label_revision(incident_id: str, state: dict[str, Any]) -> None:
+    """Announce a re-assessment before its outcome lands in the thread.
+
+    Whatever the run stops on — a finished report or a fresh approval request —
+    it must not read as a duplicate that silently contradicts the first one.
+    """
+    revision = int(state.get("revision", 0) or 0)
+    if not revision:
+        return
+
+    from app.slack import progress
+
+    await progress.emit(
+        incident_id,
+        f":arrows_counterclockwise: *Revised assessment — revision {revision}*\n"
+        "New information was folded into the original investigation; "
+        "what follows supersedes the earlier conclusion.",
+    )
 
 
 def _pending_interrupts(snapshot: Any) -> list[Any]:
