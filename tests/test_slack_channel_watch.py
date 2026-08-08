@@ -673,6 +673,43 @@ async def test_the_answer_can_see_the_whole_record(slack_on, posted, monkeypatch
     assert any("give me the timeline" in p["text"] for p in posted) or posted
 
 
+# ── Finding inflation ────────────────────────────────────────────────────────
+def test_a_specialist_cannot_pad_its_way_to_seven_findings():
+    """Live: the same specialist on the same alert reported 2, then 5, then 7
+    findings across rounds, and the reviewer downgraded a true positive to
+    inconclusive as the padding accumulated. More work made the verdict worse."""
+    from app.graph.nodes.specialist import MAX_FINDINGS_PER_SPECIALIST, ReportedFinding, _best
+
+    def f(title: str, severity: str, confidence: float) -> ReportedFinding:
+        return ReportedFinding(title=title, detail="d", severity=severity, confidence=confidence)
+
+    kept = _best(
+        [
+            f("filler", "informational", 0.2),
+            f("the beacon", "critical", 0.9),
+            f("more filler", "informational", 0.1),
+            f("the loader", "high", 0.8),
+            f("noise", "low", 0.5),
+            f("the mfa registration", "high", 0.9),
+            f("padding", "informational", 0.3),
+        ]
+    )
+
+    assert len(kept) == MAX_FINDINGS_PER_SPECIALIST
+    titles = [k.title for k in kept]
+    # Severity first, then confidence — the signal survives, the filler does not.
+    assert titles[0] == "the beacon"
+    assert "the mfa registration" in titles and "the loader" in titles
+    assert "padding" not in titles
+
+
+def test_a_short_report_is_left_exactly_as_it_is():
+    from app.graph.nodes.specialist import ReportedFinding, _best
+
+    findings = [ReportedFinding(title="only one", detail="d")]
+    assert _best(findings) is findings
+
+
 # ── Planning hygiene ─────────────────────────────────────────────────────────
 def test_one_specialist_is_not_dispatched_twice_in_a_round():
     """Seen live: three identical `behavioral` agents in one round, three times
