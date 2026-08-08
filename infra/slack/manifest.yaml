@@ -1,0 +1,62 @@
+# Slack app manifest for the AgenticIR bot.
+#
+#   1. https://api.slack.com/apps → Create New App → From an app manifest
+#   2. Paste this file, replacing app.example.com with your APP_FQDN.
+#   3. Install to workspace, then copy:
+#        Bot User OAuth Token (xoxb-…) → SLACK_BOT_TOKEN
+#        Basic Information → Signing Secret → SLACK_SIGNING_SECRET
+#   4. Set SLACK_ENABLED=true and redeploy.
+#   5. Invite the bot: /invite @IR Bot in #incident-response
+#
+# Scopes are deliberately minimal: the bot reads only messages that mention it,
+# and writes only to channels it has been invited to.
+
+display_information:
+  name: AgenticIR
+  description: Agentic incident response — investigate alerts from Slack
+  background_color: "#0f1117"
+  long_description: >-
+    AgenticIR runs a multi-agent investigation over security alerts and reports
+    findings back into the thread. Mention the bot with an alert or a question
+    and it dispatches triage, enrichment and behavioural specialists, reviews
+    their work, and proposes containment actions for human approval.
+
+features:
+  bot_user:
+    display_name: IR Bot
+    always_online: true
+
+  slash_commands:
+    - command: /ir
+      url: https://app.example.com/slack/commands
+      description: Start an incident investigation
+      usage_hint: "suspicious login from 203.0.113.7"
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read # see mentions of the bot
+      - chat:write # post findings and approval prompts
+      - channels:history # read thread context in public channels
+      - groups:history # ...and private channels it is invited to
+      - im:history # direct messages
+      - im:write # reply in DMs
+      - commands # /ir
+      - users:read # resolve approver identity for the audit record
+      - reactions:write # acknowledge receipt
+
+settings:
+  event_subscriptions:
+    request_url: https://app.example.com/slack/events
+    bot_events:
+      - app_mention
+      - message.im
+
+  interactivity:
+    is_enabled: true
+    request_url: https://app.example.com/slack/interactions
+
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
