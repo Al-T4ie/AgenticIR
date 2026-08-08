@@ -75,6 +75,7 @@ async def save_state(incident_id: str, state: dict[str, Any], status: str | None
         row.containment_actions = state.get("containment_actions", row.containment_actions) or []
         row.executed_actions = state.get("executed_actions", row.executed_actions) or []
         row.errors = state.get("errors", row.errors) or []
+        row.open_questions = state.get("open_questions", row.open_questions) or []
         row.updated_at = datetime.now(UTC)
 
 
@@ -115,6 +116,34 @@ async def list_incidents(
             stmt = stmt.where(Incident.severity == severity)
         rows = (await session.execute(stmt)).scalars().all()
         return [r.as_dict(include_report=False) for r in rows]
+
+
+async def queue_note(incident_id: str, note: str, reported_by: str = "") -> int:
+    """Park information the incident cannot absorb yet. Returns the queue depth."""
+    async with session_scope() as session:
+        row = await session.get(Incident, incident_id)
+        if row is None:
+            return 0
+        queued = list(row.pending_notes or [])
+        queued.append({"at": datetime.now(UTC).isoformat(), "by": reported_by, "note": note})
+        row.pending_notes = queued
+        row.updated_at = datetime.now(UTC)
+        return len(queued)
+
+
+async def drain_notes(incident_id: str) -> list[dict[str, Any]]:
+    """Take everything queued, clearing it in the same transaction.
+
+    Read-then-clear atomically: a note handed out twice would re-run an
+    investigation for information it has already folded in.
+    """
+    async with session_scope() as session:
+        row = await session.get(Incident, incident_id)
+        if row is None or not row.pending_notes:
+            return []
+        queued = list(row.pending_notes)
+        row.pending_notes = []
+        return queued
 
 
 async def attach_slack_thread(incident_id: str, channel: str, thread_ts: str) -> None:
