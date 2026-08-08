@@ -73,6 +73,15 @@ async def start_investigation(
     )
     RUNS_STARTED.labels(source=source).inc()
 
+    # An alert routed to a channel but not to a thread — a SIEM webhook, an API
+    # caller, a slash command — has nowhere to narrate, so it would go silent
+    # until the final report. Open the thread first by acknowledging in the
+    # channel, and adopt that message as the incident's thread root.
+    if slack_channel and not slack_thread_ts:
+        slack_thread_ts = await _open_thread(incident_id, slack_channel, record["title"])
+        if slack_thread_ts:
+            record["slack_thread_ts"] = slack_thread_ts
+
     initial = new_state(
         incident_id=incident_id,
         thread_id=thread_id,
@@ -85,6 +94,24 @@ async def start_investigation(
     _spawn(_execute(thread_id, incident_id, initial))
     log.info("runner.started", incident_id=incident_id, source=source)
     return record
+
+
+async def _open_thread(incident_id: str, channel: str, title: str) -> str:
+    """Post the acknowledgement and make it the incident's thread. Never raises."""
+    if not get_settings().slack_enabled:
+        return ""
+    try:
+        from app.slack import notifier, progress
+
+        ts = await notifier.acknowledge(channel, "", incident_id, title)
+        if not ts:
+            return ""
+        await incidents.attach_slack_thread(incident_id, channel, ts)
+        progress.forget(incident_id)  # it may have been cached as thread-less
+        return ts
+    except Exception as exc:  # noqa: BLE001 — an un-narrated run still beats no run
+        log.error("runner.open_thread_failed", incident_id=incident_id, error=str(exc))
+        return ""
 
 
 async def resume_investigation(incident_id: str, decision: dict[str, Any]) -> dict[str, Any] | None:
