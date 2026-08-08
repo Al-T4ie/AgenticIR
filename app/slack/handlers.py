@@ -13,7 +13,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.observability import get_logger
-from app.services import incidents, runner
+from app.services import incidents, runner, slack_watch
 from app.slack import blocks, notifier
 
 log = get_logger(__name__)
@@ -50,10 +50,24 @@ async def handle_event(payload: dict[str, Any]) -> None:
     is_mention = kind == "app_mention"
     is_dm = kind == "message" and event.get("channel_type") == "im"
 
-    if is_mention or is_dm:
-        await _handle_mention(event)
-    else:
+    if not (is_mention or is_dm):
         log.debug("slack.event_ignored", kind=kind)
+        return
+
+    # Claim the message so the channel poller doesn't handle it a second time.
+    # Slack also redelivers events on its own retry schedule; the claim makes
+    # that idempotent too. A DM channel is never polled, so it needs no claim.
+    channel = str(event.get("channel", ""))
+    ts = str(event.get("ts", ""))
+    if is_mention and channel and ts:
+        try:
+            if not await slack_watch.claim(channel, ts, disposition="mention"):
+                log.info("slack.event_already_claimed", channel=channel, ts=ts)
+                return
+        except Exception as exc:  # noqa: BLE001 — never drop an event over bookkeeping
+            log.warning("slack.claim_failed", error=str(exc))
+
+    await _handle_mention(event)
 
 
 async def _handle_mention(event: dict[str, Any]) -> None:
@@ -71,11 +85,11 @@ async def _handle_mention(event: dict[str, Any]) -> None:
         )
         return
 
-    # A mention inside an existing incident thread is a follow-up question,
-    # not a new incident.
+    # A mention inside an existing incident thread is a follow-up, not a new
+    # incident.
     existing = await incidents.get_by_slack_thread(channel, thread_ts)
     if existing:
-        await _handle_followup(existing, text, channel, thread_ts)
+        await _handle_followup(existing, text, channel, thread_ts, user=user)
         return
 
     record = await runner.start_investigation(
@@ -90,9 +104,14 @@ async def _handle_mention(event: dict[str, Any]) -> None:
 
 
 async def _handle_followup(
-    incident: dict[str, Any], text: str, channel: str, thread_ts: str
+    incident: dict[str, Any], text: str, channel: str, thread_ts: str, user: str = ""
 ) -> None:
-    """Answer questions about an incident already under investigation."""
+    """Handle a mention inside an incident thread.
+
+    Two things arrive here and they need different treatment: a *question* about
+    the incident, which is answered from the record, and *new information*,
+    which should reopen the investigation rather than be answered at.
+    """
     status = incident.get("status")
     if status == "running":
         await notifier.post(
@@ -109,7 +128,59 @@ async def _handle_followup(
         )
         return
 
-    # Completed or failed: answer from the incident record.
+    if await _adds_information(incident, text, user):
+        outcome = await runner.follow_up_investigation(incident["id"], text, reported_by=user)
+        if outcome == "revising":
+            await notifier.post(
+                channel,
+                text="New information noted — re-assessing.",
+                blocks_payload=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": ":arrows_counterclockwise: *New information* — "
+                            f"re-assessing `{incident['id']}` with this taken into account.",
+                        },
+                    }
+                ],
+                thread_ts=thread_ts,
+            )
+            return
+        # Anything else (a race back into running, a vanished record) is better
+        # answered than silently dropped.
+
+    await answer_followup(incident, text, channel, thread_ts)
+
+
+async def _adds_information(incident: dict[str, Any], text: str, user: str) -> bool:
+    """Does this message change what we know, or is it just asking?"""
+    try:
+        from app.slack import poller
+
+        dispositions = await poller.classify(
+            [
+                {
+                    "ts": "followup",
+                    "user": user,
+                    "text": text,
+                    "thread_ts": incident.get("slack_thread_ts", ""),
+                    "incident_id": incident["id"],
+                }
+            ],
+            [incident],
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to answering, never to silence
+        log.warning("slack.intent_classification_failed", error=str(exc))
+        return False
+    decision = dispositions.get("followup")
+    return bool(decision and decision.action == "update_incident")
+
+
+async def answer_followup(
+    incident: dict[str, Any], text: str, channel: str, thread_ts: str
+) -> None:
+    """Answer a question strictly from what the incident record contains."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from app.graph import llm
