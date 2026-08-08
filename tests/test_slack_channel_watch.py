@@ -239,20 +239,22 @@ async def test_information_arriving_mid_run_is_deferred_not_dropped(slack_on, po
 
     assert result == "queued"
     assert deferred == ["1700000009.000000"]
-    assert "fold that in" in posted[0]["text"]
+    assert "folding in" in posted[0]["text"]
 
 
-async def test_pending_approval_blocks_a_re_assessment(slack_on, posted, monkeypatch):
-    """Re-planning under a pending approval would invalidate what the human is deciding."""
+async def test_information_arriving_under_a_pending_approval_is_kept(slack_on, posted, monkeypatch):
+    """Re-planning under a pending approval would invalidate the actions being
+    decided on — but the approver is exactly who needs the new fact, so it is
+    parked and acknowledged rather than refused."""
 
     async def fake_follow_up(incident_id, note, *, reported_by=""):  # noqa: ARG001
-        return "awaiting_approval"
+        return "queued_for_approval"
 
     monkeypatch.setattr(poller.runner, "follow_up_investigation", fake_follow_up)
     monkeypatch.setattr(
         poller.incidents, "get_incident", lambda _id: _async(_incident(status="awaiting_approval"))
     )
-    monkeypatch.setattr(poller.slack_watch, "release", _noop)
+    monkeypatch.setattr(poller.slack_watch, "defer", lambda *a, **k: _async(True))
 
     result = await poller._act(
         "C_TEST",
@@ -267,8 +269,8 @@ async def test_pending_approval_blocks_a_re_assessment(slack_on, posted, monkeyp
         "INC-1",
     )
 
-    assert result == "blocked_on_approval"
-    assert "containment decision" in posted[0]["text"]
+    assert result == "queued_for_approval"
+    assert posted and "Noted" in posted[0]["text"]
 
 
 async def test_ignored_messages_do_nothing(slack_on, posted, monkeypatch):
@@ -304,22 +306,28 @@ async def test_update_without_an_incident_is_not_guessed_at(slack_on, posted, mo
 
 
 # ── Revising a closed incident ───────────────────────────────────────────────
-async def test_follow_up_refuses_while_the_run_is_in_flight(monkeypatch):
+@pytest.mark.parametrize(
+    ("status", "outcome"),
+    [("running", "queued"), ("awaiting_approval", "queued_for_approval")],
+)
+async def test_information_is_never_rejected_for_bad_timing(monkeypatch, status, outcome):
+    """Telemetry does not wait for the incident to be idle. A busy incident parks
+    the note; it must never throw it away."""
     from app.services import runner
 
-    monkeypatch.setattr(
-        runner.incidents, "get_incident", lambda _id: _async(_incident(status="running"))
-    )
-    assert await runner.follow_up_investigation("INC-1", "more info") == "queued"
+    queued: list[tuple[str, str]] = []
 
-
-async def test_follow_up_refuses_while_an_approval_is_pending(monkeypatch):
-    from app.services import runner
+    async def fake_queue(incident_id, note, reported_by=""):  # noqa: ARG001
+        queued.append((incident_id, note))
+        return len(queued)
 
     monkeypatch.setattr(
-        runner.incidents, "get_incident", lambda _id: _async(_incident(status="awaiting_approval"))
+        runner.incidents, "get_incident", lambda _id: _async(_incident(status=status))
     )
-    assert await runner.follow_up_investigation("INC-1", "more info") == "awaiting_approval"
+    monkeypatch.setattr(runner.incidents, "queue_note", fake_queue)
+
+    assert await runner.follow_up_investigation("INC-1", "more info") == outcome
+    assert queued == [("INC-1", "more info")]
 
 
 async def test_follow_up_on_an_unknown_incident(monkeypatch):
@@ -396,7 +404,7 @@ async def test_a_revision_is_labelled_even_when_it_stops_for_approval(monkeypatc
     monkeypatch.setattr(progress_module, "emit", fake_emit)
 
     await runner._label_revision("INC-1", {"revision": 2})
-    assert said and "revision 2" in said[0]
+    assert said and "Revision 2" in said[0]
 
     said.clear()
     await runner._label_revision("INC-1", {"revision": 0})
@@ -508,6 +516,82 @@ async def test_decision_reporting_can_be_switched_off(slack_on, posted):
         [{"applied": "ignore", "incident_id": "", "user": "U", "text": "x", "reason": "y"}],
     )
     assert posted == []
+
+
+# ── Parked information is applied, not lost ──────────────────────────────────
+async def test_everything_queued_is_applied_as_one_revision(monkeypatch):
+    """Five facts that landed during one investigation are five facts about the
+    same incident, not five reasons to re-investigate it."""
+    from app.services import runner
+
+    applied: list[str] = []
+
+    monkeypatch.setattr(
+        runner.incidents,
+        "drain_notes",
+        lambda _id: _async(
+            [
+                {"by": "zscaler", "note": "47 beacons to 198.51.100.77"},
+                {"by": "entra-id", "note": "MFA device registered from Bucharest"},
+            ]
+        ),
+    )
+
+    async def fake_follow_up(incident_id, note, *, reported_by=""):  # noqa: ARG001
+        applied.append(note)
+        return "revising"
+
+    monkeypatch.setattr(runner, "follow_up_investigation", fake_follow_up)
+    await runner._apply_pending("INC-1")
+
+    assert len(applied) == 1
+    assert "47 beacons" in applied[0] and "Bucharest" in applied[0]
+
+
+async def test_nothing_queued_starts_nothing(monkeypatch):
+    from app.services import runner
+
+    monkeypatch.setattr(runner.incidents, "drain_notes", lambda _id: _async([]))
+
+    async def explode(*a, **k):
+        raise AssertionError("should not re-run with an empty queue")
+
+    monkeypatch.setattr(runner, "follow_up_investigation", explode)
+    await runner._apply_pending("INC-1")
+
+
+# ── Questions for the humans ─────────────────────────────────────────────────
+async def test_questions_are_asked_once_not_every_round(monkeypatch):
+    """The critic carries unanswered questions forward each revision. Re-posting
+    them every time is nagging, not diligence."""
+    from app.services import runner
+
+    asked: list[list[str]] = []
+
+    from app.slack import progress as progress_module
+
+    async def fake_ask(incident_id, questions):  # noqa: ARG001
+        asked.append(list(questions))
+
+    monkeypatch.setattr(progress_module, "ask_humans", fake_ask)
+
+    state = {"open_questions": ["Is FIN-WS-04 a build agent?", "Is 198.51.100.77 approved?"]}
+
+    await runner._ask_open_questions("INC-1", state, asked_before=set())
+    assert asked == [["Is FIN-WS-04 a build agent?", "Is 198.51.100.77 approved?"]]
+
+    # Second pass: both already asked, so nothing is posted.
+    asked.clear()
+    await runner._ask_open_questions("INC-1", state, asked_before=set(state["open_questions"]))
+    assert asked == []
+
+    # A genuinely new question still gets through.
+    asked.clear()
+    state["open_questions"] = [*state["open_questions"], "Was there a deploy tonight?"]
+    await runner._ask_open_questions(
+        "INC-1", state, asked_before={"Is FIN-WS-04 a build agent?", "Is 198.51.100.77 approved?"}
+    )
+    assert asked == [["Was there a deploy tonight?"]]
 
 
 # ── Planning hygiene ─────────────────────────────────────────────────────────
