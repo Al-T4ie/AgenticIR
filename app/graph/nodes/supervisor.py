@@ -13,6 +13,7 @@ from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
 from app.graph.state import ALL_SPECIALISTS, IncidentState
 from app.observability import get_logger
+from app.slack import progress
 from app.tools.builtin import alert_to_text
 
 log = get_logger(__name__)
@@ -98,6 +99,12 @@ async def supervisor_node(state: IncidentState) -> dict[str, Any]:
         incident_id=state.get("incident_id"),
         round=current_round,
         specialists=[t.specialist for t in valid],
+    )
+    await progress.planning(
+        str(state.get("incident_id", "")),
+        current_round,
+        [t.specialist for t in valid],
+        plan.reasoning,
     )
 
     return {
