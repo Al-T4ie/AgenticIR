@@ -76,6 +76,17 @@ Check for:
 - Severity inflation or deflation relative to the findings.
 - Missing alternative (benign) explanations.
 
+Judge the evidence that is present. Data nobody could obtain — a payload not \
+captured, a log not retained, a system not integrated — is a limit on the \
+investigation, not evidence against the conclusion. A responder who waits for \
+complete information never acts.
+
+`inconclusive` means the evidence genuinely points both ways: there is a benign \
+reading that fits the facts as well as the malicious one. It does not mean "not \
+everything is known". If the behaviour observed is what an attack looks like and \
+no benign explanation fits, that is a true positive with whatever confidence the \
+evidence supports — say 60% and commit, rather than declining to decide.
+
 If material gaps remain, set needs_more_work and name precisely what to chase. \
 Be strict, but do not manufacture work: if the investigation is genuinely \
 sufficient for a verdict, say so and let it close.
