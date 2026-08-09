@@ -245,6 +245,7 @@ TECHNIQUES: dict[str, tuple[str, tuple[str, ...]]] = {
     "T1485": ("Data Destruction", ("impact",)),
     "T1486": ("Data Encrypted for Impact", ("impact",)),
     "T1657": ("Financial Theft", ("impact",)),
+    "T1531": ("Account Access Removal", ("impact",)),
     "T1499": ("Endpoint Denial of Service", ("impact",)),
     "T1490": ("Inhibit System Recovery", ("impact",)),
     "T1498": ("Network Denial of Service", ("impact",)),
