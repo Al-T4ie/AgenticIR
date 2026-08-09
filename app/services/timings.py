@@ -57,6 +57,29 @@ def humanise(seconds: float | None) -> str:
     return f"{hours}h {rest // 60:02d}m"
 
 
+def _actors_between(
+    timeline: list[dict[str, Any]], start: datetime | None, end: datetime | None
+) -> list[str]:
+    """Distinct non-human actors that reported inside a window, in order.
+
+    Humans are excluded on purpose: the point of the list is what the machine
+    was doing while the clock ran, and the human contribution is already broken
+    out as the waiting figure.
+    """
+    if start is None or end is None:
+        return []
+    seen: list[str] = []
+    for entry in timeline:
+        at = _parse(entry.get("at"))
+        if at is None or at < start or at > end:
+            continue
+        actor = str(entry.get("actor", ""))
+        if not actor or _is_human(actor) or actor in seen:
+            continue
+        seen.append(actor)
+    return seen
+
+
 def measure(record: dict[str, Any]) -> dict[str, Any]:
     """Phase durations for one incident, in seconds, plus formatted strings.
 
@@ -161,8 +184,29 @@ def measure(record: dict[str, Any]) -> dict[str, Any]:
             "note": "opened to the published report" if closed else "opened to now — still running",
         },
     ]
+    # Which agents were working inside each window. "Time to triage: 1m 08s" is
+    # a number; "1m 08s, and enrichment and behavioral both ran" is an
+    # explanation, and it is the difference between a metric you can act on and
+    # one you can only report.
+    bounds = {
+        "ttd": (detected, opened),
+        "tta": (opened, marks.get("first_evidence")),
+        "ttt": (opened, marks.get("first_verdict")),
+        "ttp": (opened, marks.get("planned")),
+        "ttc": (opened, marks.get("contained")),
+        "ttr": (opened, closed or last),
+    }
+    # Every window starts at `opened`, so the cumulative lists nest and the
+    # later ones read as noise. What a reader wants from "time to contain" is
+    # what happened *since* the previous mark, so each phase shows only the
+    # agents it added.
+    already: set[str] = set()
     for phase in phases:
         phase["value"] = humanise(phase["seconds"])
+        actors = _actors_between(timeline, *bounds.get(phase["key"], (None, None)))
+        phase["actors"] = actors
+        phase["new_actors"] = [a for a in actors if a not in already]
+        already.update(actors)
 
     machine = (total - waiting) if (total is not None and waiting) else total
     share = (waiting / total * 100) if (total and waiting) else 0.0
