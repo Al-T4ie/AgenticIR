@@ -506,6 +506,58 @@ def phase_gate(
     return record
 
 
+def approve(http: Http, incident_id: str, record: dict[str, Any], why: str) -> tuple[int, int]:
+    """Approve everything pending on an incident. Returns (HTTP status, count)."""
+    pending = [a for a in record.get("containment_actions", []) if a.get("requires_approval")]
+    status, _ = http.json(
+        f"/v1/incidents/{incident_id}/approve",
+        method="POST",
+        payload={
+            "approved_all": True,
+            "approved_actions": [a["action"] for a in pending],
+            "approver": "e2e-harness",
+            "note": why,
+        },
+    )
+    return status, len(pending)
+
+
+def settle(
+    http: Http,
+    rep: Report,
+    incident_id: str,
+    timeout: int,
+    label: str,
+    *,
+    phase: str = "approval",
+    max_gates: int = 3,
+) -> dict[str, Any]:
+    """Drive an incident to a terminal state, approving every gate it stops at.
+
+    One approval does not mean one gate. Draining telemetry that arrived
+    mid-run produces a revision, and a revision that proposes containment must
+    ask again — the alternative is executing actions a human never saw. Waiting
+    only for `completed` reads that correct behaviour as a hang.
+    """
+    for gate in range(max_gates):
+        record = wait_for(
+            http,
+            incident_id,
+            {"completed", "failed", "awaiting_approval"},
+            timeout=timeout,
+            label=label,
+        )
+        if str(record.get("status")) != "awaiting_approval":
+            return record
+        status, count = approve(http, incident_id, record, f"approved by the {label} scenario")
+        rep.note(
+            phase,
+            f"gate {gate + 2} reached",
+            f"a revision proposed {count} more action(s) — approved, HTTP {status}",
+        )
+    return wait_for(http, incident_id, {"completed", "failed"}, timeout=timeout, label=label)
+
+
 def phase_approval(
     http: Http, rep: Report, incident_id: str, record: dict[str, Any], timeout: int
 ) -> dict[str, Any]:
@@ -517,7 +569,7 @@ def phase_approval(
             "containment paused for a human",
             False,
             grade=WARN,
-            detail=f"status was {record.get('status')} — nothing needed approving on this run",
+            on_fail=f"status was {record.get('status')} — nothing needed approving on this run",
         )
         return record
 
@@ -530,21 +582,10 @@ def phase_approval(
     )
     rep.note(p, "proposed", "; ".join(str(a.get("action", ""))[:60] for a in pending[:3]) or "none")
 
-    status, _ = http.json(
-        f"/v1/incidents/{incident_id}/approve",
-        method="POST",
-        payload={
-            "approved_all": True,
-            "approved_actions": [a["action"] for a in pending],
-            "approver": "e2e-harness",
-            "note": "approved by the end-to-end scenario",
-        },
-    )
+    status, _count = approve(http, incident_id, record, "approved by the end-to-end scenario")
     rep.check(p, "the approval is accepted", status == 200, detail=f"HTTP {status}")
 
-    after = wait_for(
-        http, incident_id, {"completed", "failed"}, timeout=timeout, label="after approval"
-    )
+    after = settle(http, rep, incident_id, timeout, "after approval")
     rep.check(
         p,
         "the run resumes and finishes",
@@ -594,29 +635,7 @@ def phase_revision(
         detail=outcome,
     )
 
-    after = wait_for(
-        http,
-        incident_id,
-        {"completed", "failed", "awaiting_approval"},
-        timeout=timeout,
-        label="revision",
-    )
-    if str(after.get("status")) == "awaiting_approval":
-        pending = [a for a in after.get("containment_actions", []) if a.get("requires_approval")]
-        http.json(
-            f"/v1/incidents/{incident_id}/approve",
-            method="POST",
-            payload={
-                "approved_all": True,
-                "approved_actions": [a["action"] for a in pending],
-                "approver": "e2e-harness",
-                "note": "approved by the end-to-end scenario (revision)",
-            },
-        )
-        after = wait_for(
-            http, incident_id, {"completed", "failed"}, timeout=timeout, label="revision"
-        )
-
+    after = settle(http, rep, incident_id, timeout, "revision", phase="revision")
     rep.check(
         p,
         "the revision finishes",
