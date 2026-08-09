@@ -17,6 +17,7 @@ from app.graph import llm, prompts
 from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
 from app.observability import ACTIVE_SPECIALISTS, NODE_DURATION, concise_error, get_logger
+from app.services import ledger
 from app.slack import progress
 from app.tools.builtin import builtin_tools
 from app.tools.n8n import n8n_tools
@@ -122,10 +123,20 @@ async def _run_tool_loop(system: str, task: str, incident_id: str) -> list:
                 args = dict(call.get("args") or {})
                 if "incident_id" in getattr(tool, "args", {}) and not args.get("incident_id"):
                     args["incident_id"] = incident_id
-                try:
-                    output = str(await tool.ainvoke(args))
-                except Exception as exc:
-                    output = f"ERROR: tool raised {type(exc).__name__}: {exc}"
+                # The audit answer to "what did this investigation touch".
+                # `target` is the tool's own arguments minus the bookkeeping,
+                # so a reader can see the IP or domain that was looked up.
+                target = ", ".join(f"{k}={v}" for k, v in args.items() if k != "incident_id" and v)
+                with ledger.timed() as clock:
+                    try:
+                        output = str(await tool.ainvoke(args))
+                        outcome = "ok"
+                    except Exception as exc:
+                        output = f"ERROR: tool raised {type(exc).__name__}: {exc}"
+                        outcome = "error"
+                ledger.record_tool(
+                    tool=call["name"], outcome=outcome, target=target, duration_ms=clock["ms"]
+                )
             messages.append(ToolMessage(content=output[:8000], tool_call_id=call["id"]))
 
     return messages
@@ -150,7 +161,10 @@ async def specialist_node(payload: SpecialistPayload) -> dict[str, Any]:
     await progress.specialist_started(incident_id, name, payload["objective"])
     started = time.monotonic()
 
-    with NODE_DURATION.labels(node=f"specialist:{name}").time():
+    with (
+        NODE_DURATION.labels(node=f"specialist:{name}").time(),
+        ledger.bind(actor=name),
+    ):
         ACTIVE_SPECIALISTS.labels(specialist=name).inc()
         try:
             history = await _run_tool_loop(system, task, incident_id)
