@@ -29,6 +29,7 @@ declare -a SCENARIOS=(
   "1|demo-01-true-positive.json|true positive — expect containment + approval pause"
   "2|demo-02-false-positive.json|false positive — expect no actions, closes clean"
   "3|demo-03-inconclusive.json|inconclusive — expect escalation, not a guess"
+  "4|demo-04-shinyhunters-saas.json|SaaS data theft — no endpoint signal at all; see docs/scenarios/shinyhunters-saas.md"
 )
 
 started=()
