@@ -160,6 +160,81 @@ def test_an_empty_timeline_does_not_break_the_strip():
     assert all(v in {"active", "pending"} for v in state.values())
 
 
+def test_the_fan_out_shows_which_specialist_is_still_out():
+    """The whole reason for drawing the graph rather than a strip: two came
+    back, one has not, and a single "Specialists" box cannot say that."""
+    record = {
+        "status": "running",
+        "timeline": _timeline(
+            ("intake", "opened"),
+            ("supervisor", "Round 1: dispatched triage, enrichment, behavioral"),
+            ("enrichment", "Reported 3 finding(s)"),
+            ("behavioral", "Reported 2 finding(s)"),
+        ),
+    }
+    state = stages.specialist_states(record)
+    assert state["enrichment"]["state"] == "done"
+    assert state["behavioral"]["state"] == "done"
+    assert state["triage"]["state"] == "active"
+
+
+def test_a_specialist_never_dispatched_is_distinct_from_one_still_running():
+    record = {
+        "status": "running",
+        "timeline": _timeline(
+            ("intake", "opened"),
+            ("supervisor", "Round 1: dispatched enrichment"),
+        ),
+    }
+    state = stages.specialist_states(record)
+    assert state["enrichment"]["state"] == "active"
+    assert state["triage"]["state"] == "unused"
+
+
+def test_a_specialist_failure_is_carried_onto_the_graph():
+    record = {
+        "status": "completed",
+        "timeline": _timeline(
+            ("intake", "opened"),
+            ("supervisor", "Round 1: dispatched behavioral"),
+            ("behavioral", "Specialist failed: TimeoutError"),
+        ),
+    }
+    assert stages.specialist_states(record)["behavioral"]["state"] == "failed"
+
+
+def test_a_dispatch_that_never_reported_on_a_closed_incident_is_a_failure():
+    """Nothing is in flight once the run is over, so an agent still marked
+    active was dispatched into a run that ended without it."""
+    record = {
+        "status": "completed",
+        "timeline": _timeline(
+            ("intake", "opened"),
+            ("supervisor", "Round 1: dispatched triage"),
+            ("reporter", "Incident report generated"),
+        ),
+    }
+    assert stages.specialist_states(record)["triage"]["state"] == "failed"
+
+
+def test_specialist_runs_are_counted_within_the_current_pass():
+    record = {
+        "status": "completed",
+        "timeline": _timeline(
+            ("intake", "opened"),
+            ("supervisor", "Round 1: dispatched enrichment"),
+            ("enrichment", "Reported 1 finding(s)"),
+            ("intake", "reopened"),
+            ("supervisor", "Round 1: dispatched enrichment"),
+            ("enrichment", "Reported 4 finding(s)"),
+            ("supervisor", "Round 2: dispatched enrichment"),
+            ("enrichment", "Reported 2 finding(s)"),
+        ),
+    }
+    # Two runs this pass, not the three across the incident's whole life.
+    assert stages.specialist_states(record)["enrichment"]["runs"] == 2
+
+
 # ── What it touched ──────────────────────────────────────────────────────────
 def _finding(*techniques: str, severity: str = "high", title: str = "f"):
     return {
