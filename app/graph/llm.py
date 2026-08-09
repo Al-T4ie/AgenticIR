@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.observability import LLM_CALLS, get_logger
+from app.services import ledger
 
 log = get_logger(__name__)
 
@@ -115,15 +116,67 @@ async def structured(
 
     Raises on failure — callers decide whether that degrades the node or the run.
     """
-    llm = get_llm(role).with_structured_output(schema, **_structured_kwargs())
-    try:
-        result = await llm.ainvoke(messages)
-        LLM_CALLS.labels(role=role, outcome="ok").inc()
-        return result  # type: ignore[return-value]
-    except Exception as exc:
-        LLM_CALLS.labels(role=role, outcome="error").inc()
-        log.error("llm.structured_failed", role=role, schema=schema.__name__, error=str(exc))
-        raise
+    # include_raw keeps the underlying AIMessage alongside the parsed object.
+    # Without it the token usage is discarded before anything can read it, and
+    # "which agent spent what" becomes unanswerable after the fact.
+    llm = get_llm(role).with_structured_output(schema, include_raw=True, **_structured_kwargs())
+    with ledger.timed() as clock:
+        try:
+            envelope = await llm.ainvoke(messages)
+        except Exception as exc:
+            LLM_CALLS.labels(role=role, outcome="error").inc()
+            ledger.record_llm(
+                role=role, model=_model_name(role), duration_ms=clock["ms"], outcome="error"
+            )
+            log.error("llm.structured_failed", role=role, schema=schema.__name__, error=str(exc))
+            raise
+
+    LLM_CALLS.labels(role=role, outcome="ok").inc()
+    parsed, raw = _unwrap(envelope)
+    _meter(role, raw, clock["ms"])
+    if parsed is None:
+        # include_raw swallows parsing errors into the envelope rather than
+        # raising, so an unparsed reply has to be re-raised by hand or the node
+        # receives None and fails somewhere less informative.
+        error = envelope.get("parsing_error") if isinstance(envelope, dict) else None
+        raise ValueError(f"{schema.__name__} could not be parsed from the model reply: {error}")
+    return parsed  # type: ignore[return-value]
+
+
+def _unwrap(envelope: Any) -> tuple[Any, Any]:
+    """`include_raw` returns {"raw", "parsed", "parsing_error"}; older paths do not."""
+    if isinstance(envelope, dict) and ("parsed" in envelope or "raw" in envelope):
+        return envelope.get("parsed"), envelope.get("raw")
+    return envelope, None
+
+
+def _model_name(role: Role) -> str:
+    settings = get_settings()
+    return {
+        "supervisor": settings.llm_model_supervisor,
+        "specialist": settings.llm_model_specialist,
+        "critic": settings.llm_model_critic,
+    }.get(role, "")
+
+
+def _meter(role: Role, raw: Any, duration_ms: int) -> None:
+    """Attribute one call's token usage to the incident that caused it.
+
+    Providers disagree about where usage lives: LangChain normalises it onto
+    `usage_metadata`, but gateways sometimes only populate `response_metadata`.
+    Both are checked, and zero is recorded rather than guessed at.
+    """
+    usage = getattr(raw, "usage_metadata", None) or {}
+    if not usage:
+        meta = getattr(raw, "response_metadata", None) or {}
+        usage = meta.get("token_usage") or meta.get("usage") or {}
+    ledger.record_llm(
+        role=role,
+        model=_model_name(role),
+        input_tokens=usage.get("input_tokens") or usage.get("prompt_tokens") or 0,
+        output_tokens=usage.get("output_tokens") or usage.get("completion_tokens") or 0,
+        duration_ms=duration_ms,
+    )
 
 
 def coerce_json_list(value: Any) -> Any:
@@ -146,8 +199,10 @@ def coerce_json_list(value: Any) -> Any:
 async def text(role: Role, messages: list[BaseMessage]) -> str:
     llm = get_llm(role)
     try:
-        result = await llm.ainvoke(messages)
+        with ledger.timed() as clock:
+            result = await llm.ainvoke(messages)
         LLM_CALLS.labels(role=role, outcome="ok").inc()
+        _meter(role, result, clock["ms"])
         content = result.content
         if isinstance(content, list):  # Anthropic content blocks
             return "".join(
@@ -156,5 +211,6 @@ async def text(role: Role, messages: list[BaseMessage]) -> str:
         return str(content).strip()
     except Exception as exc:
         LLM_CALLS.labels(role=role, outcome="error").inc()
+        ledger.record_llm(role=role, model=_model_name(role), outcome="error")
         log.error("llm.text_failed", role=role, error=str(exc))
         raise
