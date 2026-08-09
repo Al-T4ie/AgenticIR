@@ -106,6 +106,45 @@ SCENARIOS: dict[str, dict[str, Any]] = {
             "morning by the vendor's account team."
         ),
     },
+    # Modelled on the publicly reported UNC6040 / ShinyHunters SaaS campaign:
+    # vishing the user into authorising a look-alike connected app, bulk export
+    # over the vendor's own API, then extortion. Nothing touches an endpoint, so
+    # it is the scenario that fails if the platform only reasons about EDR.
+    "shinyhunters-saas": {
+        "title": "Vished OAuth grant into bulk CRM export and extortion",
+        "alert": {
+            "title": "Unrecognised connected app performing bulk CRM export",
+            "severity": "critical",
+            "source_product": "Salesforce Shield Event Monitoring",
+            "user": "r.delacruz@example.com",
+            "platform": "Salesforce (production, customer PII and pipeline)",
+            "connected_app": "'Data Loader' — consumer key not in the approved app inventory",
+            "src_ip": "185.65.135.42 (AS39351 Mullvad VPN, Amsterdam)",
+            "detail": (
+                "A connected app named 'Data Loader' was authorised at 12:58 UTC from a "
+                "Mullvad exit node, then exported 1,204,719 records across Account, "
+                "Contact, Opportunity, Case and Attachment in 43 minutes via Bulk API 2.0 "
+                "— about 287x the tenant's daily baseline. The authorising user says a "
+                "caller claiming to be internal IT talked her through the approval and "
+                "read out a verification code. Her normal egress is the Manila corporate "
+                "ASN. No endpoint alert fired; the whole chain is SaaS-native."
+            ),
+        },
+        "midflight": (
+            "Okta: the same user completed an MFA push at 12:57 UTC from 185.65.135.42, "
+            "13 seconds after a push she declined from the same IP. Two other Sales Ops "
+            "users received declined pushes from the same ASN within the hour. The "
+            "helpdesk logged three calls that morning from a caller asking to 'confirm "
+            "which staff have Salesforce admin'."
+        ),
+        "revision": (
+            "An extortion email arrived at legal@example.com from a ProtonMail address "
+            "quoting the exact export count (1,204,719) and a sample of 20 real Account "
+            "records. It threatens publication on a leak site in 72 hours and names the "
+            "group. Salesforce confirms the connected app's refresh token is still valid "
+            "and was used again 20 minutes ago."
+        ),
+    },
 }
 
 DEFAULT_SCENARIO = "ransomware-precursor"
