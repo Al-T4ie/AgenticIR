@@ -319,6 +319,37 @@
   .qlist .q.open .qmark { background: rgba(201,138,43,.16); color: var(--warn, #c98a2b); }
   .qlist .qmeta { font-size: 11.5px; margin-top: 3px; }
 
+  /* ── Agent spend ──────────────────────────────────────────────────────*/
+  .agent-chip {
+    display: inline-block; font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11px; padding: 2px 7px; border-radius: 3px; margin: 0 4px 3px 0;
+    background: rgba(127,127,127,.12); color: var(--fg);
+  }
+  .agent-chip.lg { font-size: 12.5px; padding: 3px 8px; }
+  .tt-actors { margin-top: 8px; }
+  .spend-head {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 1px; background: var(--line); border: 1px solid var(--line);
+    border-radius: 8px; overflow: hidden; margin-bottom: 16px;
+  }
+  .spend-head .cell { background: var(--panel); padding: 11px 13px; }
+  .spend-head .cell span {
+    display: block; font-size: 10.5px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .spend-head .cell b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  table.spend td, table.spend th { padding: 9px 10px; }
+  table.spend .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* Width is relative to the biggest spender, not the total — the shape stays
+     readable when one agent dominates, which one always does. */
+  .sbar { background: var(--line); border-radius: 4px; height: 8px; overflow: hidden; min-width: 60px; }
+  .sbar span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+  .tag.err { background: rgba(200,60,60,.15); color: var(--bad, #c33); }
+  h3.sub-h {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); margin: 22px 0 4px;
+  }
+
   @media print {
     header, .no-print { display: none !important; }
     body { background: #fff; color: #000; }
