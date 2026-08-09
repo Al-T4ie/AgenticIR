@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}{{ incident.id }} report — AgenticIR{% endblock %}
+{% block content %}
+
+{# The report as it was actually published — same text that went to Slack —
+   with the supporting record underneath it. Printable: the print stylesheet
+   drops the chrome so this is the artefact an auditor gets handed. #}
+
+<div class="report-head">
+  <div class="row no-print" style="margin-bottom:12px">
+    <a href="/ui/incidents/{{ incident.id }}">← Incident</a>
+    <a href="/ui">All incidents</a>
+  </div>
+  <h1>{{ incident.title }}</h1>
+  <p class="verdict-line">
+    <span class="pill sev-{{ incident.severity }}">{{ incident.severity }}</span>
+    {{ incident.verdict.replace('_',' ')|title }}
+    <span class="muted" style="font-weight:400">
+      · {{ '%.0f'|format((incident.confidence or 0) * 100) }}% confidence</span>
+  </p>
+  <div class="muted mono">
+    {{ incident.id }} · opened {{ (incident.created_at or '')[:19].replace('T',' ') }} UTC
+    · last updated {{ (incident.updated_at or '')[:19].replace('T',' ') }} UTC
+  </div>
+
+  <div class="meta-grid">
+    <div class="meta"><div class="l">Source</div><div class="v mono">{{ incident.source }}</div></div>
+    <div class="meta"><div class="l">Status</div><div class="v st-{{ incident.status }}">{{ incident.status.replace('_',' ') }}</div></div>
+    <div class="meta"><div class="l">Findings</div><div class="v">{{ incident.findings|length }}</div></div>
+    <div class="meta"><div class="l">Techniques</div><div class="v">{{ attack.technique_count }} / {{ attack.tactic_count }} tactics</div></div>
+    <div class="meta"><div class="l">Actions run</div><div class="v">{{ incident.executed_actions|length }}</div></div>
+  </div>
+</div>
+
+{% if stale %}
+<div class="banner error">
+  <b>This report is out of date.</b>
+  New information reopened the incident and it has been re-assessed, but the
+  reporting stage has not run again yet — the text below describes the
+  <em>previous</em> conclusion. The verdict in the header is current.
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Report</h2>
+  {% if incident.report %}
+    <div class="report md">{{ incident.report|slack_md|safe }}</div>
+  {% else %}
+    <p class="muted" style="margin:0">
+      No report has been written yet — this incident has not reached the reporting stage.
+    </p>
+  {% endif %}
+</div>
+
+{% if incident.open_questions %}
+<div class="panel">
+  <h2>Outstanding questions for the responders</h2>
+  <p class="muted" style="margin:0 0 10px; font-size:13.5px">
+    Gaps no further automated work can close. Answering any of these in the Slack
+    thread reopens the investigation with the answer taken into account.
+  </p>
+  <ol style="margin:0; padding-left:20px">
+    {% for q in incident.open_questions %}<li style="margin-bottom:6px">{{ q }}</li>{% endfor %}
+  </ol>
+</div>
+{% endif %}
+
+{% if attack.observed %}
+<div class="panel">
+  <h2>ATT&amp;CK coverage</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Tactic</th><th>Technique</th><th>Cited by</th></tr></thead>
+      <tbody>
+        {% for lane in attack.observed %}
+          {% for t in lane.techniques %}
+            <tr>
+              <td>{% if loop.first %}<b>{{ lane.label }}</b>{% endif %}</td>
+              <td><span class="mono">{{ t.id }}</span> {{ t.name }}</td>
+              <td class="muted">
+                {% for f in t.findings %}{{ f.specialist }}{{ ", " if not loop.last }}{% endfor %}
+              </td>
+            </tr>
+          {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Findings ({{ incident.findings|length }})</h2>
+  {% for f in incident.findings %}
+    <div class="finding {{ f.severity }}">
+      <div class="row" style="justify-content:space-between">
+        <b>{{ f.title }}</b>
+        <span class="muted mono">{{ f.specialist }} · r{{ f.round }} · {{ '%.0f'|format((f.confidence or 0) * 100) }}%</span>
+      </div>
+      <div style="margin-top:6px">{{ f.detail }}</div>
+      {% if f.evidence %}
+        <div class="muted" style="margin-top:8px"><b>Evidence:</b>
+          <ul style="margin:4px 0">{% for e in f.evidence %}<li>{{ e }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      <div style="margin-top:6px">
+        {% for t in f.mitre_techniques %}<span class="tag mono">{{ t }}</span>{% endfor %}
+        {% for i in f.iocs %}<span class="tag mono">{{ i }}</span>{% endfor %}
+      </div>
+    </div>
+  {% else %}
+    <p class="muted">No findings recorded.</p>
+  {% endfor %}
+</div>
+
+{% if incident.executed_actions %}
+<div class="panel">
+  <h2>Actions executed against live systems</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Action</th><th>Target</th><th>When</th><th>Result</th></tr></thead>
+      <tbody>
+      {% for a in incident.executed_actions %}
+        <tr>
+          <td><b>{{ a.action }}</b></td>
+          <td class="mono">{{ a.target }}</td>
+          <td class="mono muted">{{ (a.at or '')[11:19] }}</td>
+          <td class="mono muted">{{ a.result }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% elif incident.containment_actions %}
+<div class="panel">
+  <h2>Containment</h2>
+  <p class="muted" style="margin:0">
+    {{ incident.containment_actions|length }} action(s) proposed, none executed.
+  </p>
+</div>
+{% endif %}
+
+{% if incident.errors %}
+<div class="panel">
+  <h2>Errors during investigation</h2>
+  <ul class="plain mono">{% for e in incident.errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<p class="no-print"><a href="/ui/incidents/{{ incident.id }}">← Back to the incident</a></p>
+{% endblock %}
