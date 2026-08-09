@@ -52,6 +52,10 @@ class Incident(Base):
     # run, or under a pending approval. Applied when it next becomes idle, so
     # intelligence is never rejected for arriving at an inconvenient moment.
     pending_notes: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # One entry per model call and per tool call: who spent it, on what, and
+    # what it touched. The Prometheus counters cannot answer this — they carry
+    # no incident label, and adding one would blow up cardinality.
+    usage: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
     slack_channel: Mapped[str] = mapped_column(String(64), default="")
     slack_thread_ts: Mapped[str] = mapped_column(String(64), default="")
@@ -118,6 +122,7 @@ class Incident(Base):
             # which also made the detection lag uncomputable. Detail views only:
             # a raw SIEM payload per row would bloat every list response.
             data["alert"] = self.alert or {}
+            data["usage"] = self.usage or []
         return data
 
 
