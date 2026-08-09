@@ -129,6 +129,55 @@ async def resume_investigation(incident_id: str, decision: dict[str, Any]) -> di
     return record
 
 
+async def withdraw_plan(incident_id: str, *, reason: str) -> str:
+    """Take back a containment plan nobody decided on, so it can be rebuilt.
+
+    An incident parked at an approval gate is not idle — it is blocked, and
+    everything that arrives while it is blocked queues behind it unapplied. Over
+    fifteen minutes that costs nothing. Over five hours it means the plan on the
+    table was argued from evidence the investigation has since moved past, and
+    the queue behind it never drains, because notes are only applied when a run
+    finishes and no run can finish until somebody approves.
+
+    Withdrawing resolves the interrupt with an explicit non-decision: nothing is
+    executed, the graph unwinds to a stopping point, and `_execute` then folds
+    the queue in as the next revision. The human is not overruled — they were
+    never asked about *this* plan, and what they get instead is one built on
+    everything now known.
+
+    Returns "withdrawn", "not_gated" or "unknown".
+    """
+    record = await incidents.get_incident(incident_id)
+    if record is None:
+        return "unknown"
+    if record["status"] != "awaiting_approval":
+        # Someone decided between the sweep reading the row and this running.
+        return "not_gated"
+
+    await incidents.set_status(incident_id, "running")
+    _spawn(
+        _execute(
+            record["thread_id"],
+            incident_id,
+            Command(
+                resume={
+                    "approved_all": False,
+                    "approved_actions": [],
+                    "approver": "system",
+                    "withdrawn": True,
+                    "note": reason,
+                }
+            ),
+            # The report this produces is superseded within seconds by the
+            # revision that follows it. Publishing both would put a stale
+            # conclusion in the thread under its own heading.
+            quiet=True,
+        )
+    )
+    log.info("runner.plan_withdrawn", incident_id=incident_id, reason=reason)
+    return "withdrawn"
+
+
 async def follow_up_investigation(
     incident_id: str,
     note: str,
@@ -220,8 +269,14 @@ def _now() -> str:
     return now_iso()
 
 
-async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
-    """Drive the graph to its next stopping point: interrupt, completion, or error."""
+async def _execute(thread_id: str, incident_id: str, payload: Any, *, quiet: bool = False) -> None:
+    """Drive the graph to its next stopping point: interrupt, completion, or error.
+
+    `quiet` suppresses the completion announcement for a run whose only purpose
+    is to unblock the thread — a withdrawn plan. If nothing turns out to be
+    queued behind it the announcement happens after all, because a silent
+    incident is worse than a redundant one.
+    """
     async with _sem():
         graph = get_graph()
         config = _config(thread_id)
@@ -267,10 +322,16 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
         else:
             await incidents.save_state(incident_id, state, status="completed")
             await _label_revision(incident_id, state)
-            await _notify(incident_id, "completed")
-            await _ask_open_questions(incident_id, state, asked_before)
+            if not quiet:
+                await _notify(incident_id, "completed")
+                await _ask_open_questions(incident_id, state, asked_before)
             # Anything that arrived while this was in flight applies now.
-            await _apply_pending(incident_id)
+            started = await _apply_pending(incident_id)
+            if quiet and not started:
+                # The queue drained elsewhere between the withdrawal and here,
+                # so there is no revision coming to replace the silence.
+                await _notify(incident_id, "completed")
+                await _ask_open_questions(incident_id, state, asked_before)
             log.info(
                 "runner.completed",
                 incident_id=incident_id,
@@ -302,25 +363,28 @@ async def _ask_open_questions(
     log.info("runner.asked_humans", incident_id=incident_id, questions=len(questions))
 
 
-async def _apply_pending(incident_id: str) -> None:
+async def _apply_pending(incident_id: str) -> bool:
     """Fold in information that arrived while the incident was busy.
 
     Everything queued is applied as one revision rather than one run each — five
     notes that landed during a two-minute investigation are five facts about the
     same incident, not five reasons to re-investigate it.
+
+    Returns whether a revision was actually started.
     """
     queued = await incidents.drain_notes(incident_id)
     if not queued:
-        return
+        return False
 
     note = "\n".join(f"- ({n.get('by') or 'unknown'}) {n.get('note', '')}" for n in queued)
     reporters = sorted({str(n.get("by") or "") for n in queued if n.get("by")})
     log.info("runner.applying_pending", incident_id=incident_id, count=len(queued))
-    await follow_up_investigation(
+    outcome = await follow_up_investigation(
         incident_id,
         f"Information received while the investigation was in progress:\n{note}",
         reported_by=", ".join(reporters),
     )
+    return outcome == "revising"
 
 
 async def _label_revision(incident_id: str, state: dict[str, Any]) -> None:

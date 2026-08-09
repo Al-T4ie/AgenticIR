@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.db.session import close_db, init_db
 from app.graph.builder import close_graph, init_graph
 from app.observability import configure_logging, configure_tracing, get_logger
-from app.services import runner
+from app.services import runner, upkeep
 from app.slack import poller
 
 log = get_logger(__name__)
@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
         llm_provider=settings.llm_provider,
         slack=settings.slack_enabled,
         slack_poll=settings.slack_poll_enabled,
+        upkeep=settings.upkeep_enabled,
         n8n=settings.n8n_enabled,
     )
 
@@ -51,12 +52,14 @@ async def lifespan(app: FastAPI):
         log.error("startup.recovery_failed", error=str(exc))
 
     poller.start()
+    upkeep.start()
 
     try:
         yield
     finally:
         app.state.ready = False
         await poller.stop()
+        await upkeep.stop()
         await runner.drain(timeout=25.0)
         await close_graph()
         await close_db()

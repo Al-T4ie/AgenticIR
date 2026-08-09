@@ -131,6 +131,22 @@ class Settings(BaseSettings):
     # Catch-up cadence in winger and responder modes.
     ir_digest_seconds: int = 600
 
+    # ── Long-running incidents ──
+    # A fifteen-minute incident needs nothing here: it starts, runs and reports
+    # inside one pass. A five-hour one spends most of its life *between* runs —
+    # parked at an approval nobody has looked at, accumulating notes it cannot
+    # absorb, going quiet on the people working it. Upkeep is the caretaker for
+    # that gap; without it the platform is only really awake while the graph is.
+    upkeep_enabled: bool = True
+    upkeep_interval_seconds: int = 60
+    # How long a containment plan may sit unapproved before new information is
+    # allowed to supersede it. A plan is an argument from the evidence available
+    # when it was written; hours later, with fresh evidence queued behind it,
+    # approving it as-is means acting on a picture nobody holds any more. The
+    # human is not bypassed — they are handed a plan that reflects what is known
+    # now. Zero disables the behaviour and lets plans wait indefinitely.
+    stale_gate_seconds: int = 1800
+
     # ── n8n ──
     n8n_enabled: bool = False
     n8n_base_url: str = "http://n8n:5678"

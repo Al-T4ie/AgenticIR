@@ -118,6 +118,13 @@ def measure(record: dict[str, Any]) -> dict[str, Any]:
             if first_gate is not None and decided:
                 human_waits.append((first_gate, at))
                 first_gate = None
+        elif actor == "system" and event.startswith("Plan withdrawn"):
+            # Nobody came, and the plan went stale waiting. That is still time
+            # the incident spent blocked on a person — arguably the purest
+            # example of it — so the gate closes here and the wait counts.
+            if first_gate is not None:
+                human_waits.append((first_gate, at))
+                first_gate = None
         elif actor == "executor":
             marks.setdefault("contained", at)
         elif actor == "reporter":

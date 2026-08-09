@@ -43,6 +43,9 @@ _MAX_CANDIDATES = 25
 _HISTORY_LIMIT = 100
 _REPLIES_LIMIT = 50
 _MAX_THREADS_PER_SWEEP = 15
+# Live war rooms read per sweep, newest first. Uncapped, a workspace that has
+# accumulated rooms turns one tick into dozens of Slack round-trips.
+_MAX_ROOMS_PER_SWEEP = 10
 
 TRIAGE_PROMPT = """You are triaging messages posted in a security incident-response \
 Slack channel, deciding which ones the IR bot should act on.
@@ -200,6 +203,47 @@ async def _thread_messages(channel: str, thread_ts: str) -> list[dict[str, Any]]
 # ── One sweep ────────────────────────────────────────────────────────────────
 
 
+async def watched_channels() -> list[tuple[str, str]]:
+    """Every channel to sweep this cycle, as (channel_id, owning_incident_id).
+
+    The configured list is fixed at deploy time, which is correct for the shared
+    incident channel and useless for a war room created ten minutes ago. An
+    incident gets its own channel precisely so the conversation happens there —
+    a room nobody reads is worse than no room, because people reasonably assume
+    that talking in it reaches the bot.
+
+    War rooms carry their incident id, so anything said in one is bound to that
+    incident rather than left to the classifier to guess at.
+    """
+    settings = get_settings()
+    out: list[tuple[str, str]] = []
+    for name in settings.polled_channels:
+        channel = await resolve_channel(name)
+        if channel:
+            out.append((channel, ""))
+
+    configured = {c for c, _ in out}
+    try:
+        rooms = await incidents.active_channels(settings.slack_poll_thread_window_hours)
+    except Exception as exc:  # noqa: BLE001 — losing the rooms must not lose the sweep
+        log.warning("poller.rooms_lookup_failed", error=str(exc))
+        return out
+
+    for channel in rooms[:_MAX_ROOMS_PER_SWEEP]:
+        if channel in configured:
+            continue
+        record = await incidents.get_by_slack_channel(channel)
+        out.append((channel, (record or {}).get("id", "")))
+    if len(rooms) > _MAX_ROOMS_PER_SWEEP:
+        log.warning(
+            "poller.rooms_truncated",
+            open_rooms=len(rooms),
+            swept=_MAX_ROOMS_PER_SWEEP,
+            hint="more live war rooms than one sweep reads — raise the poll interval budget",
+        )
+    return out
+
+
 async def sweep() -> dict[str, Any]:
     """Read every watched channel once and act on what is new."""
     settings = get_settings()
@@ -208,13 +252,10 @@ async def sweep() -> dict[str, Any]:
     self_id = await bot_user_id()
     budget = settings.slack_poll_max_actions
 
-    for name in settings.polled_channels:
-        channel = await resolve_channel(name)
-        if not channel:
-            continue
+    for channel, owner in await watched_channels():
         summary["channels"] += 1
         try:
-            result = await _sweep_channel(channel, self_id, budget)
+            result = await _sweep_channel(channel, self_id, budget, owner=owner)
         except Exception as exc:  # noqa: BLE001 — one bad channel must not stop the rest
             log.error("poller.channel_failed", channel=channel, error=str(exc))
             continue
@@ -227,7 +268,9 @@ async def sweep() -> dict[str, Any]:
     return summary
 
 
-async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, Any]:
+async def _sweep_channel(
+    channel: str, self_id: str, budget: int, *, owner: str = ""
+) -> dict[str, Any]:
     settings = get_settings()
     cursor = await slack_watch.get_cursor(channel)
     oldest = cursor or f"{time.time() - settings.slack_poll_lookback_minutes * 60:.6f}"
@@ -249,7 +292,9 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
                 "user": str(message.get("user", "")),
                 "text": str(message.get("text", "")),
                 "thread_ts": str(message.get("thread_ts", "") or ""),
-                "incident_id": "",
+                # In a war room the channel *is* the incident, so nothing said
+                # there needs classifying into one.
+                "incident_id": owner,
             }
         )
 
@@ -287,7 +332,7 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
     for ts in await slack_watch.deferred(channel):
         if ts in seen_ts:
             continue
-        recovered = await _refetch(channel, ts, known)
+        recovered = await _refetch(channel, ts, known, owner=owner)
         if recovered:
             from_deferred.append(recovered)
 
@@ -337,7 +382,7 @@ async def _sweep_channel(channel: str, self_id: str, budget: int) -> dict[str, A
             continue
 
         try:
-            applied = await _act(channel, candidate, action, incident_id)
+            applied = await _act(channel, candidate, action, incident_id, owner=owner)
         except Exception as exc:  # noqa: BLE001
             log.error("poller.act_failed", ts=candidate["ts"], error=str(exc))
             await slack_watch.defer(channel, candidate["ts"])
@@ -411,7 +456,9 @@ async def _report_decisions(channel: str, decisions: list[dict[str, str]]) -> No
     )
 
 
-async def _refetch(channel: str, ts: str, known: list[dict[str, Any]]) -> dict[str, Any] | None:
+async def _refetch(
+    channel: str, ts: str, known: list[dict[str, Any]], *, owner: str = ""
+) -> dict[str, Any] | None:
     """Re-read a single deferred message so its text is current."""
     try:
         response = await (await _client()).conversations_history(
@@ -425,7 +472,7 @@ async def _refetch(channel: str, ts: str, known: list[dict[str, Any]]) -> dict[s
         return None
     message = messages[0]
     thread_ts = str(message.get("thread_ts", "") or "")
-    incident_id = next(
+    incident_id = owner or next(
         (i["id"] for i in known if thread_ts and i.get("slack_thread_ts") == thread_ts), ""
     )
     return {
@@ -517,13 +564,24 @@ async def classify(
 # ── Acting ───────────────────────────────────────────────────────────────────
 
 
-async def _act(channel: str, candidate: dict[str, Any], action: str, incident_id: str) -> str:
+async def _act(
+    channel: str, candidate: dict[str, Any], action: str, incident_id: str, *, owner: str = ""
+) -> str:
     """Carry out one disposition. Returns what was actually done."""
     from app.slack import handlers, notifier
 
     ts = candidate["ts"]
     text = candidate["text"]
     user = candidate["user"]
+
+    # A war room belongs to one incident, and opening a second one rooted in it
+    # would take the room over: the new incident would claim the channel and
+    # every later message in it would be attributed to the wrong investigation.
+    # Whatever the classifier decided, a new security observation posted in an
+    # incident's own room is information about that incident.
+    if owner and action == "investigate":
+        log.info("poller.investigate_folded_into_room", incident_id=owner, ts=ts)
+        action, incident_id = "update_incident", owner
 
     if action == "ignore" or (action in {"update_incident", "answer"} and not incident_id):
         await slack_watch.release(channel, ts, disposition="ignore")

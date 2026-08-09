@@ -38,6 +38,12 @@ POLL_MESSAGES = Counter(
     "agenticir_slack_poll_messages_total", "Channel messages triaged", ["disposition"]
 )
 
+# What the caretaker did between runs. On a long incident this is most of what
+# the platform does, and none of it shows up in the run counters.
+UPKEEP_ACTIONS = Counter(
+    "agenticir_upkeep_actions_total", "Between-run caretaker actions", ["action"]
+)
+
 
 def configure_logging() -> None:
     settings = get_settings()

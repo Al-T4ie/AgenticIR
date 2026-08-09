@@ -233,6 +233,88 @@ async def mark_digested(incident_id: str) -> None:
             row.last_digest_at = datetime.now(UTC)
 
 
+def _oldest_note(notes: list[Any]) -> datetime | None:
+    """When the earliest un-applied note arrived."""
+    stamps = []
+    for note in notes or []:
+        raw = note.get("at") if isinstance(note, dict) else None
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        stamps.append(parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC))
+    return min(stamps) if stamps else None
+
+
+async def stale_gates(after_seconds: int, limit: int = 25) -> list[dict[str, Any]]:
+    """Incidents parked at an approval that have been sitting on information.
+
+    Both halves matter. Time alone is not staleness — a plan nobody has objected
+    to is still the best plan anyone has, however long it waits. Queued notes
+    alone are not either: information that arrived a minute after the plan was
+    written probably does not overturn it, and re-planning on every note would
+    make the gate impossible to ever approve.
+
+    The clock runs from the **oldest un-applied note**, not from the incident's
+    last activity. `updated_at` moves every time a note is queued, so measuring
+    from it would reset the timer on exactly the incidents with the most new
+    information — the busier the incident, the longer it would stay frozen. What
+    is actually being asked here is "how long have we been holding something we
+    cannot act on", and the note's own timestamp is the only honest answer.
+    """
+    if after_seconds <= 0:
+        return []
+    cutoff = datetime.now(UTC) - timedelta(seconds=after_seconds)
+    async with session_scope() as session:
+        # Gates are few; scan generously and filter in Python, because neither
+        # "this JSON array is non-empty" nor "its first element's timestamp"
+        # is portably expressible in SQL across the backends this runs on.
+        stmt = (
+            select(Incident)
+            .where(Incident.status == "awaiting_approval")
+            .order_by(Incident.updated_at.asc())
+            .limit(max(limit * 5, 50))
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+    stale = []
+    for row in rows:
+        oldest = _oldest_note(list(row.pending_notes or []))
+        if oldest is not None and oldest < cutoff:
+            stale.append(row.as_dict(include_report=False))
+        if len(stale) >= limit:
+            break
+    return stale
+
+
+async def active_channels(window_hours: int, limit: int = 60) -> list[str]:
+    """Slack channels belonging to live incidents — the war rooms, in practice.
+
+    The poller sweeps a channel list fixed at deploy time, which is right for the
+    shared incident channel and wrong for a room created ten minutes ago: an
+    incident gets its own channel precisely so the conversation happens there,
+    and a channel nobody reads is worse than no channel at all.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=max(window_hours, 1))
+    async with session_scope() as session:
+        stmt = (
+            select(Incident.slack_channel)
+            .where(
+                Incident.slack_channel != "",
+                # A war room owns its channel; an incident narrating into the
+                # shared channel has a thread and is already covered by it.
+                Incident.slack_thread_ts == "",
+                Incident.updated_at > cutoff,
+            )
+            .order_by(Incident.updated_at.desc())
+            .limit(limit)
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+        return list(dict.fromkeys(str(c) for c in rows if c))
+
+
 async def due_for_digest(interval_seconds: int, limit: int = 25) -> list[dict[str, Any]]:
     """Open incidents whose catch-up is due, in a mode that has catch-ups.
 

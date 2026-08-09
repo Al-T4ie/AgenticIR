@@ -190,6 +190,7 @@ async def approval_node(state: IncidentState) -> dict[str, Any]:
     )
 
     approved: list[str] = []
+    withdrawn = False
     if isinstance(decision, dict):
         if decision.get("approved_all"):
             approved = [a["action"] for a in actions]
@@ -197,6 +198,12 @@ async def approval_node(state: IncidentState) -> dict[str, Any]:
             approved = list(decision.get("approved_actions", []))
         approver = decision.get("approver", "unknown")
         note = decision.get("note", "")
+        # A plan taken back before anyone ruled on it. Recording it as a
+        # rejection would put words in an approver's mouth, and recording the
+        # actor as `human:` would bill the machine's own housekeeping as a
+        # person's decision — which is exactly the number this system exists to
+        # measure honestly.
+        withdrawn = bool(decision.get("withdrawn"))
     else:  # a bare truthy resume value means "approve everything"
         approved = [a["action"] for a in actions] if decision else []
         approver, note = "unknown", ""
@@ -207,24 +214,28 @@ async def approval_node(state: IncidentState) -> dict[str, Any]:
         approver=approver,
         approved=len(approved),
         proposed=len(actions),
+        withdrawn=withdrawn,
     )
+
+    if withdrawn:
+        event = f"Plan withdrawn before any decision — {note}" if note else "Plan withdrawn"
+        actor = "system"
+    else:
+        event = f"Approved {len(approved)} of {len(actions)} action(s)" + (
+            f" — {note}" if note else ""
+        )
+        actor = f"human:{approver}"
 
     return {
         "approval": {
             "approver": approver,
             "approved_actions": approved,
             "note": note,
+            "withdrawn": withdrawn,
             "at": now_iso(),
         },
         "status": "running",
-        "timeline": [
-            {
-                "at": now_iso(),
-                "actor": f"human:{approver}",
-                "event": f"Approved {len(approved)} of {len(actions)} action(s)"
-                + (f" — {note}" if note else ""),
-            }
-        ],
+        "timeline": [{"at": now_iso(), "actor": actor, "event": event}],
     }
 
 
