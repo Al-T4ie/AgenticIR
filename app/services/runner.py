@@ -17,7 +17,7 @@ from app.config import get_settings
 from app.graph.builder import get_graph
 from app.graph.state import new_state
 from app.observability import ACTIVE_RUNS, RUNS_STARTED, concise_error, get_logger
-from app.services import incidents
+from app.services import incidents, ledger
 
 log = get_logger(__name__)
 
@@ -227,9 +227,13 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
         config = _config(thread_id)
         ACTIVE_RUNS.inc()
         try:
-            # payload None resumes from the stored checkpoint without injecting
-            # new input — how an interrupted run is picked back up.
-            await graph.ainvoke(payload, config=config)
+            # Everything the graph spends inside this block is attributed to
+            # this incident — model calls and tool calls alike — without any
+            # node having to carry an audit parameter.
+            with ledger.bind(incident_id=incident_id):
+                # payload None resumes from the stored checkpoint without
+                # injecting new input — how an interrupted run is picked back up.
+                await graph.ainvoke(payload, config=config)
         except Exception as exc:
             log.exception("runner.failed", incident_id=incident_id, error=str(exc))
             await incidents.save_state(
@@ -241,6 +245,9 @@ async def _execute(thread_id: str, incident_id: str, payload: Any) -> None:
             return
         finally:
             ACTIVE_RUNS.dec()
+            # A run that failed still spent what it spent; billing it only on
+            # success would quietly under-report the expensive failures.
+            await ledger.flush(incident_id)
 
         snapshot = await graph.aget_state(config)
         state = dict(snapshot.values or {})
