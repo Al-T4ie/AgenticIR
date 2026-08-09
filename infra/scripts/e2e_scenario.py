@@ -842,19 +842,38 @@ def phase_ops(http: Http, rep: Report, *, ran_incident: bool) -> None:
         else "no sweeps recorded — poller may be disabled",
     )
 
-    llm_err = 0.0
+    # Count the failure label, never "everything that isn't success". Guessing
+    # the vocabulary made this read 30 successful calls as 30 failures, and the
+    # same mistake in the other direction would hide real ones: `app/graph/llm.py`
+    # labels outcomes `ok` and `error`.
+    by_outcome: dict[str, float] = {}
     for m in re.finditer(
         r'^agenticir_llm_calls_total\{[^}]*outcome="(\w+)"[^}]*\} ([0-9.e+-]+)$', metrics, re.M
     ):
-        if m.group(1) != "success":
-            llm_err += float(m.group(2))
+        with contextlib.suppress(ValueError):
+            by_outcome[m.group(1)] = by_outcome.get(m.group(1), 0.0) + float(m.group(2))
+
+    errors = by_outcome.get("error", 0.0)
+    ok = by_outcome.get("ok", 0.0)
+    unknown = sorted(set(by_outcome) - {"ok", "error"})
     rep.check(
         p,
         "no LLM call failures accumulating",
-        llm_err == 0,
+        errors == 0,
         grade=WARN,
-        detail=f"{llm_err:.0f} failed calls",
+        detail=f"{ok:.0f} succeeded, none failed",
+        on_fail=f"{errors:.0f} failed of {ok + errors:.0f}",
     )
+    if unknown:
+        # A label this harness does not recognise is silently uncounted, which
+        # is how a failure mode goes unnoticed for a release.
+        rep.check(
+            p,
+            "every LLM outcome label is accounted for",
+            False,
+            grade=WARN,
+            on_fail=f"unrecognised outcome(s): {', '.join(unknown)}",
+        )
 
     rep.facts["uptime_min"] = round(uptime / 60, 1)
 
