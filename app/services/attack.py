@@ -78,8 +78,10 @@ TECHNIQUES: dict[str, tuple[str, tuple[str, ...]]] = {
     "T1566.001": ("Spearphishing Attachment", ("initial-access",)),
     "T1566.002": ("Spearphishing Link", ("initial-access",)),
     "T1566.003": ("Spearphishing via Service", ("initial-access",)),
+    "T1566.004": ("Spearphishing Voice", ("initial-access",)),
     "T1091": ("Replication Through Removable Media", ("initial-access", "lateral-movement")),
     "T1195": ("Supply Chain Compromise", ("initial-access",)),
+    "T1199": ("Trusted Relationship", ("initial-access",)),
     # ── Execution ──
     "T1059": ("Command and Scripting Interpreter", ("execution",)),
     "T1059.001": ("PowerShell", ("execution",)),
@@ -174,6 +176,7 @@ TECHNIQUES: dict[str, tuple[str, tuple[str, ...]]] = {
     "T1550.001": ("Application Access Token", ("defense-evasion", "lateral-movement")),
     # ── Discovery ──
     "T1087": ("Account Discovery", ("discovery",)),
+    "T1087.004": ("Cloud Account Discovery", ("discovery",)),
     "T1010": ("Application Window Discovery", ("discovery",)),
     "T1217": ("Browser Information Discovery", ("discovery",)),
     "T1526": ("Cloud Service Discovery", ("discovery",)),
@@ -183,6 +186,7 @@ TECHNIQUES: dict[str, tuple[str, tuple[str, ...]]] = {
     "T1201": ("Password Policy Discovery", ("discovery",)),
     "T1120": ("Peripheral Device Discovery", ("discovery",)),
     "T1069": ("Permission Groups Discovery", ("discovery",)),
+    "T1069.003": ("Cloud Groups", ("discovery",)),
     "T1057": ("Process Discovery", ("discovery",)),
     "T1012": ("Query Registry", ("discovery",)),
     "T1018": ("Remote System Discovery", ("discovery",)),
@@ -210,6 +214,7 @@ TECHNIQUES: dict[str, tuple[str, tuple[str, ...]]] = {
     "T1039": ("Data from Network Shared Drive", ("collection",)),
     "T1074": ("Data Staged", ("collection",)),
     "T1114": ("Email Collection", ("collection",)),
+    "T1114.002": ("Remote Email Collection", ("collection",)),
     "T1113": ("Screen Capture", ("collection",)),
     # ── Command and control ──
     "T1071": ("Application Layer Protocol", ("command-and-control",)),
@@ -233,11 +238,13 @@ TECHNIQUES: dict[str, tuple[str, tuple[str, ...]]] = {
     "T1048": ("Exfiltration Over Alternative Protocol", ("exfiltration",)),
     "T1041": ("Exfiltration Over C2 Channel", ("exfiltration",)),
     "T1567": ("Exfiltration Over Web Service", ("exfiltration",)),
+    "T1567.002": ("Exfiltration to Cloud Storage", ("exfiltration",)),
     "T1029": ("Scheduled Transfer", ("exfiltration",)),
     "T1537": ("Transfer Data to Cloud Account", ("exfiltration",)),
     # ── Impact ──
     "T1485": ("Data Destruction", ("impact",)),
     "T1486": ("Data Encrypted for Impact", ("impact",)),
+    "T1657": ("Financial Theft", ("impact",)),
     "T1499": ("Endpoint Denial of Service", ("impact",)),
     "T1490": ("Inhibit System Recovery", ("impact",)),
     "T1498": ("Network Denial of Service", ("impact",)),
