@@ -59,6 +59,7 @@ async def init_db() -> None:
             ("mode_set_by", "VARCHAR(64) DEFAULT ''"),
             ("channel_opened_at", "TIMESTAMPTZ"),
             ("last_digest_at", "TIMESTAMPTZ"),
+            ("usage", "JSON DEFAULT '[]'::json"),
         ):
             await conn.execute(
                 text(f"ALTER TABLE incidents ADD COLUMN IF NOT EXISTS {column} {ddl}")
