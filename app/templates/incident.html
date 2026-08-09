@@ -33,17 +33,102 @@
       {%- if incident.report %} · <a href="/ui/incidents/{{ incident.id }}/report">full report →</a>{% endif %}
     </span>
   </div>
-  <ol class="pipeline">
+  {# The graph as it actually runs, with this incident's state on it. The
+     linear strip this replaces collapsed three parallel agents into one box,
+     hiding the thing most worth seeing mid-run: two are back, one is still
+     out. #}
+  {% set st = pipeline.state_of %}
+  {% set words = {'done':'done','active':'running','waiting':'waiting on you',
+                  'pending':'queued','skipped':'not needed','failed':'failed',
+                  'unused':'not dispatched'} %}
+  <div class="chart-wrap">
+    <svg class="agraph" viewBox="0 0 1150 296" role="img"
+         aria-label="Agent graph for this incident. {% for s in pipeline.steps %}{{ s.label }} {{ words[s.state] }}. {% endfor %}">
+      <defs>
+        <marker id="ga" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      {# edges first so nodes sit on top #}
+      <line x1="104" y1="148" x2="130" y2="148" class="ge {{ st('supervisor') }}" marker-end="url(#ga)"/>
+      {% for y in [60, 148, 236] %}
+        <path d="M246 148 C 264 148, 264 {{ y }}, 282 {{ y }}" class="ge {{ st('specialist') }}" marker-end="url(#ga)"/>
+        <path d="M418 {{ y }} C 436 {{ y }}, 436 148, 448 148" class="ge {{ st('critic') }}" marker-end="url(#ga)"/>
+      {% endfor %}
+      <line x1="540" y1="148" x2="566" y2="148" class="ge {{ st('containment') }}" marker-end="url(#ga)"/>
+      <line x1="688" y1="148" x2="714" y2="148" class="ge {{ st('approval') }}" marker-end="url(#ga)"/>
+      <line x1="844" y1="148" x2="870" y2="148" class="ge {{ st('execute') }}" marker-end="url(#ga)"/>
+      <line x1="968" y1="148" x2="994" y2="148" class="ge {{ st('report') }}" marker-end="url(#ga)"/>
+
+      {# the loop, and the bypass when nothing needed a human #}
+      <path d="M496 170 V 268 H 190 V 172" class="ge dash {{ 'done' if pipeline.rounds > 1 else 'pending' }}" marker-end="url(#ga)"/>
+      <text x="343" y="284" class="gl" text-anchor="middle">
+        {% if pipeline.rounds > 1 %}reviewer asked for another round · {{ pipeline.rounds }} of {{ max_rounds }}
+        {%- else %}no further round needed{% endif %}</text>
+      {% if st('approval') == 'skipped' %}
+        <path d="M629 128 C 629 100, 907 100, 907 126" class="ge dash skipped" marker-end="url(#ga)"/>
+        <text x="768" y="94" class="gl" text-anchor="middle">below the floor → auto</text>
+      {% endif %}
+
+      <text x="264" y="112" class="gl" text-anchor="middle">Send</text>
+
+      {# nodes #}
+      <g class="gn {{ st('intake') }}">
+        <rect x="16" y="128" width="88" height="40" rx="6"/>
+        <text x="60" y="152" text-anchor="middle">intake</text>
+      </g>
+      <g class="gn {{ st('supervisor') }}">
+        <rect x="130" y="128" width="116" height="40" rx="6"/>
+        <text x="188" y="152" text-anchor="middle">supervisor</text>
+      </g>
+
+      {% for name in ['triage', 'enrichment', 'behavioral'] %}
+        {% set sp = specialist_states[name] %}
+        {% set y = [42, 130, 218][loop.index0] %}
+        <g class="gn {{ sp.state }}">
+          <rect x="282" y="{{ y }}" width="136" height="36" rx="6"/>
+          <text x="350" y="{{ y + 23 }}" text-anchor="middle">{{ name }}</text>
+        </g>
+        {% if sp.runs %}
+          <text x="428" y="{{ y + 23 }}" class="gl">×{{ sp.runs }}</text>
+        {% endif %}
+      {% endfor %}
+
+      <g class="gn {{ st('critic') }}">
+        <rect x="448" y="128" width="92" height="40" rx="6"/>
+        <text x="494" y="152" text-anchor="middle">critic</text>
+      </g>
+      <g class="gn {{ st('containment') }}">
+        <rect x="566" y="128" width="122" height="40" rx="6"/>
+        <text x="627" y="152" text-anchor="middle">containment</text>
+      </g>
+      <g class="gn gate {{ st('approval') }}">
+        <rect x="714" y="120" width="130" height="56" rx="6"/>
+        <text x="779" y="145" text-anchor="middle">approval</text>
+        <text x="779" y="163" text-anchor="middle" class="gsub">interrupt() · human</text>
+      </g>
+      <g class="gn {{ st('execute') }}">
+        <rect x="870" y="128" width="98" height="40" rx="6"/>
+        <text x="919" y="152" text-anchor="middle">execute</text>
+      </g>
+      <g class="gn {{ st('report') }}">
+        <rect x="994" y="128" width="92" height="40" rx="6"/>
+        <text x="1040" y="152" text-anchor="middle">report</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="row glegend">
     {% for s in pipeline.steps %}
-      <li class="st {{ s.state }}">
-        <span class="node" aria-hidden="true"></span>
-        <span class="name">{{ s.label }}</span>
-        <span class="what">{{
-          {'done':'done','active':'running','waiting':'waiting on you',
-           'pending':'queued','skipped':'not needed','failed':'failed'}[s.state] }}</span>
-      </li>
+      {% if s.state in ('active', 'waiting', 'failed') %}
+        <span class="gtag {{ s.state }}">{{ s.label }} — {{ words[s.state] }}</span>
+      {% endif %}
     {% endfor %}
-  </ol>
+    {% for name, sp in specialist_states.items() if sp.state in ('active', 'failed') %}
+      <span class="gtag {{ sp.state }}">{{ name }} — {{ words[sp.state] }}</span>
+    {% endfor %}
+  </div>
   {% if specialists %}
   <details class="dig">
     <summary>Specialist runs ({{ specialists|length }})</summary>
