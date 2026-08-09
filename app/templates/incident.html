@@ -20,6 +20,123 @@
 </div>
 {% endif %}
 
+{# ── Where it is in the graph ───────────────────────────────────────────── #}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:baseline">
+    <h2 style="margin:0">Progress</h2>
+    <span class="muted mono" style="font-size:12px">
+      {%- if pipeline.revision %}revision {{ pipeline.revision }} ·
+        {{ pipeline.rounds }} round{{ '' if pipeline.rounds == 1 else 's' }} this pass,
+        {{ pipeline.total_rounds }} total
+      {%- else %}{{ pipeline.rounds }} planning round{{ '' if pipeline.rounds == 1 else 's' }}
+      {%- endif %}
+      {%- if incident.report %} · <a href="/ui/incidents/{{ incident.id }}/report">full report →</a>{% endif %}
+    </span>
+  </div>
+  <ol class="pipeline">
+    {% for s in pipeline.steps %}
+      <li class="st {{ s.state }}">
+        <span class="node" aria-hidden="true"></span>
+        <span class="name">{{ s.label }}</span>
+        <span class="what">{{
+          {'done':'done','active':'running','waiting':'waiting on you',
+           'pending':'queued','skipped':'not needed','failed':'failed'}[s.state] }}</span>
+      </li>
+    {% endfor %}
+  </ol>
+  {% if specialists %}
+  <details class="dig">
+    <summary>Specialist runs ({{ specialists|length }})</summary>
+    <ul class="plain">
+      {% for s in specialists %}
+        <li><span class="muted mono">{{ s.at }}</span>
+          <b class="{{ 'bad' if s.failed else '' }}">{{ s.specialist }}</b> — {{ s.event }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+
+{# ── ATT&CK ─────────────────────────────────────────────────────────────── #}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:baseline">
+    <h2 style="margin:0">MITRE ATT&amp;CK</h2>
+    <span class="muted mono" style="font-size:12px">
+      {{ attack.technique_count }} technique{{ '' if attack.technique_count == 1 else 's' }}
+      across {{ attack.tactic_count }} tactic{{ '' if attack.tactic_count == 1 else 's' }}
+    </span>
+  </div>
+
+  {% if attack.empty %}
+    <p class="muted" style="margin:0">No techniques cited by any finding.</p>
+  {% else %}
+    {# Kill chain, left to right. Tactics with nothing observed stay dim so the
+       shape of what the intrusion did — and did not — reach is visible. #}
+    <div class="chain-wrap">
+      <ol class="chain">
+        {% for lane in attack.lanes %}
+          <li class="tac {{ 'hit sev-b-' ~ lane.severity if lane.count else 'miss' }}">
+            <span class="tl">{{ lane.label }}</span>
+            <span class="tn">{{ lane.count or '·' }}</span>
+          </li>
+        {% endfor %}
+      </ol>
+    </div>
+
+    <div class="tech-grid">
+      {% for lane in attack.observed %}
+        <div class="tac-col">
+          <div class="tac-head">{{ lane.label }}</div>
+          {% for t in lane.techniques %}
+            <details class="tech">
+              <summary>
+                <span class="mono tid">{{ t.id }}</span>
+                <span class="tname">{{ t.name }}{% if not t.exact %}<span class="approx"
+                  title="Sub-technique not in the local catalogue — placed by its parent">parent</span>{% endif %}</span>
+                <span class="cnt">{{ t.findings|length }}</span>
+              </summary>
+              <div class="tech-body">
+                {% if not t.exact %}
+                  <p class="muted" style="margin:0 0 8px; font-size:12.5px">
+                    Sub-technique not in the local catalogue — placed by its parent technique.
+                  </p>
+                {% endif %}
+                {% for f in t.findings %}
+                  <div class="finding {{ f.severity }}">
+                    <div class="row" style="justify-content:space-between">
+                      <b>{{ f.title }}</b>
+                      <span class="muted mono">{{ f.specialist }} · r{{ f.round }}</span>
+                    </div>
+                    <div style="margin-top:5px">{{ f.detail }}</div>
+                    {% if f.evidence %}
+                      <ul class="muted" style="margin:6px 0 0">
+                        {% for e in f.evidence %}<li>{{ e }}</li>{% endfor %}
+                      </ul>
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              </div>
+            </details>
+          {% endfor %}
+        </div>
+      {% endfor %}
+    </div>
+
+    {% if attack.unmapped %}
+      <details class="dig" style="margin-top:14px">
+        <summary>Cited but not recognised ({{ attack.unmapped|length }})</summary>
+        <p class="muted" style="margin:8px 0 0; font-size:13px">
+          These were cited by a finding but are not in the local ATT&amp;CK catalogue,
+          so no tactic is claimed for them rather than guessing one.
+        </p>
+        <ul class="plain mono">
+          {% for u in attack.unmapped %}<li>{{ u.label }} — {{ u.findings|length }} finding(s)</li>{% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+  {% endif %}
+</div>
+
 {% if can_approve %}
 <div class="banner approve">
   <b>Containment approval required.</b> {{ pending_actions|length }} action(s) are waiting on a human decision.
@@ -66,7 +183,7 @@
 {% if incident.report %}
 <div class="panel">
   <h2>Report</h2>
-  <pre class="report">{{ incident.report }}</pre>
+  <div class="report md">{{ incident.report|slack_md|safe }}</div>
 </div>
 {% endif %}
 
