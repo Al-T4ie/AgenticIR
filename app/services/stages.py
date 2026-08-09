@@ -14,6 +14,7 @@ yet written its timeline entry — the timeline is a step behind, never wrong.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # The spine, in execution order. `specialist` covers whichever of the three ran.
@@ -105,8 +106,11 @@ def derive(record: dict[str, Any]) -> dict[str, Any]:
             state = "pending"
         steps.append({"key": key, "label": label, "state": state})
 
+    by_key = {s["key"]: s["state"] for s in steps}
     return {
         "steps": steps,
+        # The graph template asks for states by node name rather than iterating.
+        "state_of": by_key.get,
         "active": active,
         "status": status,
         "rounds": rounds,
@@ -114,6 +118,51 @@ def derive(record: dict[str, Any]) -> dict[str, Any]:
         "revision": revision,
         "reached": sorted(reached),
     }
+
+
+SPECIALISTS = ["triage", "enrichment", "behavioral"]
+
+_DISPATCH = re.compile(r"Round (\d+): dispatched (.+?)(?:$|\.)")
+
+
+def specialist_states(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per-specialist state for the current pass, for drawing the fan-out.
+
+    The linear strip collapses three parallel agents into one box, which hides
+    the thing most worth seeing while a run is in flight: two came back and the
+    third is still out. Each lane gets its own state here.
+    """
+    full = record.get("timeline", []) or []
+    starts = [i for i, e in enumerate(full) if str(e.get("actor")) == "intake"]
+    timeline = full[starts[-1] :] if starts else full
+
+    out = {name: {"state": "unused", "runs": 0, "last": ""} for name in SPECIALISTS}
+    dispatched: set[str] = set()
+
+    for entry in timeline:
+        actor = str(entry.get("actor", ""))
+        event = str(entry.get("event", ""))
+        if actor == "supervisor":
+            match = _DISPATCH.search(event)
+            if match:
+                for name in (n.strip() for n in match.group(2).split(",")):
+                    if name in out:
+                        dispatched.add(name)
+                        # Dispatched and not yet heard from — in flight until
+                        # its own entry lands.
+                        out[name]["state"] = "active"
+        elif actor in out:
+            out[actor]["runs"] += 1
+            out[actor]["last"] = event
+            out[actor]["state"] = "failed" if "failed" in event.lower() else "done"
+
+    # A terminal incident has nothing in flight; anything still marked active
+    # was dispatched into a run that ended before it reported.
+    if str(record.get("status", "")) in _TERMINAL:
+        for name in dispatched:
+            if out[name]["state"] == "active":
+                out[name]["state"] = "failed"
+    return out
 
 
 def specialist_detail(record: dict[str, Any]) -> list[dict[str, Any]]:
