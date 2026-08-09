@@ -275,6 +275,25 @@ def test_an_unlisted_sub_technique_falls_back_to_its_parent():
     assert "Command and Scripting" in technique["name"]
 
 
+def test_every_tactic_lane_has_techniques():
+    """A declared lane with nothing in it is a silent hole in the catalogue.
+
+    Reconnaissance and Resource Development were declared as tactics but had no
+    entries, so a domain-age or registrar observation — routine in triage —
+    rendered as a bare `T####` under "cited but not recognised". The lane was
+    drawn on the chain either way, which made the gap invisible.
+    """
+    covered = {tactic for _, tactics in attack.TECHNIQUES.values() for tactic in tactics}
+    assert [key for key, _ in attack.TACTICS if key not in covered] == []
+
+
+def test_live_cited_techniques_resolve():
+    """Regression set: every id a real run cited that the catalogue once missed."""
+    for technique_id in ("T1030", "T1583.001", "T1137", "T1203", "T1528", "T1550.001"):
+        name, tactics, _exact = attack.describe(technique_id)
+        assert name and tactics, f"{technique_id} is unmapped"
+
+
 def test_an_unknown_technique_is_reported_not_guessed():
     """A confidently wrong tactic is worse than an honest gap."""
     summary = attack.summarise([_finding("T9999")])
