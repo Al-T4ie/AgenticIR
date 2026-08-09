@@ -41,6 +41,7 @@
 </div>
 {% endif %}
 
+{# The report itself never collapses — it is the reason the page exists. #}
 <div class="panel">
   <h2>Report</h2>
   {% if incident.report %}
@@ -52,22 +53,124 @@
   {% endif %}
 </div>
 
-{% if incident.open_questions %}
+{# ── Response times ──────────────────────────────────────────────────────
+   One incident measures TTR, not MTTR — the mean needs a fleet, and the
+   fleet strip underneath supplies it. The split between machine time and
+   time spent waiting on a person is the number that says whether any of
+   this helped. #}
+{% if timings.phases %}
 <div class="panel">
-  <h2>Outstanding questions for the responders</h2>
-  <p class="muted" style="margin:0 0 10px; font-size:13.5px">
-    Gaps no further automated work can close. Answering any of these in the Slack
-    thread reopens the investigation with the answer taken into account.
+  <h2>Response times</h2>
+  <div class="tt-split">
+    <div class="tt-bar" role="img"
+         aria-label="{{ timings.human_share }} percent of elapsed time was spent waiting on a human">
+      <span class="tt-machine" style="width: {{ 100 - timings.human_share }}%"></span>
+      <span class="tt-human" style="width: {{ timings.human_share }}%"></span>
+    </div>
+    <div class="tt-legend">
+      <span><i class="sw machine"></i> agents {{ timings.machine }}</span>
+      <span><i class="sw human"></i> waiting on a human {{ timings.waiting }}
+        {% if timings.gates %}<span class="muted">· {{ timings.gates }} gate{{ '' if timings.gates == 1 else 's' }}</span>{% endif %}
+      </span>
+      <span class="muted">total {{ timings.total }}{% if timings.open %} so far{% endif %}</span>
+    </div>
+  </div>
+
+  <div class="tt-grid">
+    {% for p in timings.phases %}
+      <div class="tt {{ 'lead' if p.key == 'ttr' }}">
+        <div class="k mono">{{ p.abbr }}</div>
+        <div class="n mono">{{ p.value }}</div>
+        <div class="l">{{ p.label }}</div>
+        <div class="muted note">{{ p.note }}</div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if timings.missing %}
+    <p class="muted" style="margin:12px 0 0; font-size:13px">
+      Not measurable on this incident: {{ timings.missing|join(', ') }}.
+      {%- if 'TTD' in timings.missing %} Detection lag needs a <code>detected_at</code> on the inbound alert.{% endif %}
+    </p>
+  {% endif %}
+
+  {% if fleet.count %}
+    <details class="sub">
+      <summary>Against the last {{ fleet.count }} closed incident{{ '' if fleet.count == 1 else 's' }}</summary>
+      <div class="tt-grid" style="margin-top:12px">
+        {% for p in fleet.phases %}
+          <div class="tt">
+            <div class="k mono">{{ p.abbr }}</div>
+            <div class="n mono">{{ p.value }}</div>
+            <div class="l">{{ p.label }}</div>
+            <div class="muted note">mean of {{ p.samples }}</div>
+          </div>
+        {% endfor %}
+      </div>
+      <p class="muted" style="margin:12px 0 0; font-size:13px">
+        Averaged over closed incidents only — an open one contributes however
+        long ago somebody forgot about it. Fleet-wide, {{ fleet.human_share }}% of
+        elapsed time goes on waiting for a person.
+      </p>
+    </details>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── Questions ───────────────────────────────────────────────────────────
+   `open_questions` holds only what is outstanding now, so a question that
+   was answered leaves no trace in it. The asks are replayed from the
+   timeline, which is why both halves can be shown. #}
+{% if questions.asked %}
+<div class="panel">
+  <h2>Critical questions
+    <span class="muted" style="font-weight:400; font-size:14px">
+      — {{ questions.resolved }} answered, {{ questions.open }} still open
+    </span>
+  </h2>
+  <p class="muted" style="margin:0 0 12px; font-size:13.5px">
+    What the investigation could not settle on its own. Answering an open one in
+    Slack reopens the incident with the answer taken into account.
   </p>
-  <ol style="margin:0; padding-left:20px">
-    {% for q in incident.open_questions %}<li style="margin-bottom:6px">{{ q }}</li>{% endfor %}
+  <ol class="qlist">
+    {% for q in questions.asked %}
+      <li class="q {{ 'done' if q.resolved else 'open' }}">
+        <span class="qmark">{{ '✓' if q.resolved else '?' }}</span>
+        <div>
+          <div>{{ q.question }}</div>
+          <div class="muted mono qmeta">
+            {% if q.at %}asked {{ q.at[11:19] }}{% else %}raised this pass{% endif %}
+            · {{ 'answered or overtaken by later evidence' if q.resolved else 'still open' }}
+          </div>
+        </div>
+      </li>
+    {% endfor %}
   </ol>
+
+  {% if questions.answers %}
+    <details class="sub">
+      <summary>{{ questions.answers|length }} response{{ '' if questions.answers|length == 1 else 's' }} received</summary>
+      <ul class="plain" style="margin-top:10px">
+        {% for a in questions.answers %}
+          <li style="margin-bottom:10px">
+            <span class="muted mono">{{ a.at[11:19] }} · {{ a.by }}</span><br>{{ a.note }}
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="muted" style="margin:8px 0 0; font-size:13px">
+        Responses arrive as free text, not as replies to a specific question, so
+        they are listed rather than matched to one — pairing them would be a guess.
+      </p>
+    </details>
+  {% endif %}
 </div>
 {% endif %}
 
 {% if attack.observed %}
-<div class="panel">
-  <h2>ATT&amp;CK coverage</h2>
+<details class="panel fold" open>
+  <summary><h2>ATT&amp;CK coverage
+    <span class="muted" style="font-weight:400; font-size:14px">— {{ attack.technique_count }} techniques across {{ attack.tactic_count }} tactics</span>
+  </h2></summary>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Tactic</th><th>Technique</th><th>Cited by</th></tr></thead>
@@ -86,11 +189,16 @@
       </tbody>
     </table>
   </div>
-</div>
+</details>
 {% endif %}
 
-<div class="panel">
-  <h2>Findings ({{ incident.findings|length }})</h2>
+{# Findings are the bulk of the page and the least often read line by line.
+   Closed by default on anything past a handful — the count in the summary is
+   what most readers actually want. #}
+<details class="panel fold" {{ 'open' if incident.findings|length <= 6 }}>
+  <summary><h2>Findings
+    <span class="muted" style="font-weight:400; font-size:14px">— {{ incident.findings|length }}</span>
+  </h2></summary>
   {% for f in incident.findings %}
     <div class="finding {{ f.severity }}">
       <div class="row" style="justify-content:space-between">
@@ -111,11 +219,13 @@
   {% else %}
     <p class="muted">No findings recorded.</p>
   {% endfor %}
-</div>
+</details>
 
 {% if incident.executed_actions %}
-<div class="panel">
-  <h2>Actions executed against live systems</h2>
+<details class="panel fold" open>
+  <summary><h2>Actions executed against live systems
+    <span class="muted" style="font-weight:400; font-size:14px">— {{ incident.executed_actions|length }}</span>
+  </h2></summary>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Action</th><th>Target</th><th>When</th><th>Result</th></tr></thead>
@@ -131,7 +241,7 @@
       </tbody>
     </table>
   </div>
-</div>
+</details>
 {% elif incident.containment_actions %}
 <div class="panel">
   <h2>Containment</h2>
@@ -142,10 +252,33 @@
 {% endif %}
 
 {% if incident.errors %}
-<div class="panel">
-  <h2>Errors during investigation</h2>
+<details class="panel fold">
+  <summary><h2>Errors during investigation
+    <span class="muted" style="font-weight:400; font-size:14px">— {{ incident.errors|length }}</span>
+  </h2></summary>
   <ul class="plain mono">{% for e in incident.errors %}<li>{{ e }}</li>{% endfor %}</ul>
-</div>
+</details>
+{% endif %}
+
+{# The alert as received. Rarely read, but the one thing that settles "what was
+   it actually given" — and it was invisible until the record started
+   serialising it. #}
+{% if incident.alert %}
+<details class="panel fold">
+  <summary><h2>The originating alert</h2></summary>
+  <div class="table-wrap">
+    <table>
+      <tbody>
+      {% for k, v in incident.alert.items() %}
+        <tr>
+          <td class="mono muted" style="white-space:nowrap">{{ k }}</td>
+          <td>{% if v is mapping or v is sequence and v is not string %}<span class="mono">{{ v }}</span>{% else %}{{ v }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
 {% endif %}
 
 <p class="no-print"><a href="/ui/incidents/{{ incident.id }}">← Back to the incident</a></p>
