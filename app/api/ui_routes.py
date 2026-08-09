@@ -17,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.observability import get_logger
-from app.services import attack, incidents, runner, slackmd, stages, timeline
+from app.services import attack, incidents, runner, slackmd, stages, timeline, timings
 
 log = get_logger(__name__)
 
@@ -155,6 +155,17 @@ async def incident_report(
     # report can describe a verdict the record has already moved past. Showing
     # it without saying so presents a superseded conclusion as the current one.
     reported = next(s["state"] for s in pipeline["steps"] if s["key"] == "report")
+
+    # One incident measures TTR; MTTR needs a population. Pull a window of
+    # recent incidents so the page can show this one against the mean rather
+    # than presenting a single measurement as an average.
+    try:
+        recent = await incidents.list_incidents(limit=50, status="completed")
+        fleet = timings.fleet([await incidents.get_incident(r["id"]) or {} for r in recent[:20]])
+    except Exception as exc:  # noqa: BLE001 — the report matters more than the benchmark
+        log.warning("ui.fleet_timings_failed", incident_id=incident_id, error=str(exc))
+        fleet = {"count": 0, "phases": []}
+
     return templates.TemplateResponse(
         request,
         "report.html",
@@ -162,6 +173,9 @@ async def incident_report(
             "incident": record,
             "attack": attack.summarise(record.get("findings", [])),
             "pipeline": pipeline,
+            "timings": timings.measure(record),
+            "fleet": fleet,
+            "questions": timings.questions(record),
             "stale": bool(record.get("report")) and reported != "done",
         },
     )
