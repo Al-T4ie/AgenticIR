@@ -17,7 +17,16 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.observability import get_logger
-from app.services import attack, incidents, runner, slackmd, stages, timeline, timings
+from app.services import (
+    attack,
+    incidents,
+    ledger,
+    runner,
+    slackmd,
+    stages,
+    timeline,
+    timings,
+)
 
 log = get_logger(__name__)
 
@@ -176,6 +185,7 @@ async def incident_report(
             "timings": timings.measure(record),
             "fleet": fleet,
             "questions": timings.questions(record),
+            "spend": ledger.summarise(record),
             "stale": bool(record.get("report")) and reported != "done",
         },
     )
