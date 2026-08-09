@@ -45,6 +45,30 @@ _TACTIC_LABELS = dict(TACTICS)
 
 # id -> (name, tactics). Only entries whose tactic assignment is certain.
 TECHNIQUES: dict[str, tuple[str, tuple[str, ...]]] = {
+    # ── Reconnaissance ──
+    # The first two lanes had no entries at all, so anything an analyst cited
+    # from the pre-compromise half of the chain rendered as a bare `T####`.
+    # Domain-age and registrar checks land here constantly during triage.
+    "T1595": ("Active Scanning", ("reconnaissance",)),
+    "T1592": ("Gather Victim Host Information", ("reconnaissance",)),
+    "T1589": ("Gather Victim Identity Information", ("reconnaissance",)),
+    "T1590": ("Gather Victim Network Information", ("reconnaissance",)),
+    "T1591": ("Gather Victim Org Information", ("reconnaissance",)),
+    "T1598": ("Phishing for Information", ("reconnaissance",)),
+    "T1597": ("Search Closed Sources", ("reconnaissance",)),
+    "T1596": ("Search Open Technical Databases", ("reconnaissance",)),
+    "T1593": ("Search Open Websites/Domains", ("reconnaissance",)),
+    "T1594": ("Search Victim-Owned Websites", ("reconnaissance",)),
+    # ── Resource development ──
+    "T1650": ("Acquire Access", ("resource-development",)),
+    "T1583": ("Acquire Infrastructure", ("resource-development",)),
+    "T1583.001": ("Domains", ("resource-development",)),
+    "T1586": ("Compromise Accounts", ("resource-development",)),
+    "T1584": ("Compromise Infrastructure", ("resource-development",)),
+    "T1587": ("Develop Capabilities", ("resource-development",)),
+    "T1585": ("Establish Accounts", ("resource-development",)),
+    "T1588": ("Obtain Capabilities", ("resource-development",)),
+    "T1608": ("Stage Capabilities", ("resource-development",)),
     # ── Initial access ──
     "T1189": ("Drive-by Compromise", ("initial-access",)),
     "T1190": ("Exploit Public-Facing Application", ("initial-access",)),
@@ -205,6 +229,7 @@ TECHNIQUES: dict[str, tuple[str, tuple[str, ...]]] = {
     "T1102": ("Web Service", ("command-and-control",)),
     # ── Exfiltration ──
     "T1020": ("Automated Exfiltration", ("exfiltration",)),
+    "T1030": ("Data Transfer Size Limits", ("exfiltration",)),
     "T1048": ("Exfiltration Over Alternative Protocol", ("exfiltration",)),
     "T1041": ("Exfiltration Over C2 Channel", ("exfiltration",)),
     "T1567": ("Exfiltration Over Web Service", ("exfiltration",)),
