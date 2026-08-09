@@ -154,6 +154,18 @@ async def attach_slack_thread(incident_id: str, channel: str, thread_ts: str) ->
             row.slack_thread_ts = thread_ts
 
 
+async def append_usage(incident_id: str, entries: list[dict[str, Any]]) -> None:
+    """Append model and tool spend. Additive — a revision adds to the bill."""
+    if not entries:
+        return
+    async with session_scope() as session:
+        row = await session.get(Incident, incident_id)
+        if row is None:
+            return
+        row.usage = [*(row.usage or []), *entries]
+        row.updated_at = datetime.now(UTC)
+
+
 async def get_by_slack_channel(channel: str) -> dict[str, Any] | None:
     """The incident that owns this channel, if it is a war room.
 
