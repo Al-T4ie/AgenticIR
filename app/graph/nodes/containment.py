@@ -107,24 +107,66 @@ async def containment_node(state: IncidentState) -> dict[str, Any]:
         )
         actions.append(d)
 
+    # The bot's posture on this incident can widen what runs unattended. Read it
+    # from the record rather than from graph state: someone may have moved the
+    # incident to responder mode while this very run was in flight, and the
+    # whole point of doing so is that it takes effect now.
+    incident_id = str(state.get("incident_id", ""))
+    actions, autonomous, gated = await _apply_mode(incident_id, actions)
+
     log.info(
         "containment.planned",
-        incident_id=state.get("incident_id"),
+        incident_id=incident_id,
         actions=len(actions),
-        needing_approval=sum(1 for a in actions if a["requires_approval"]),
+        needing_approval=len(gated),
+        autonomous=len(autonomous),
     )
-    await progress.containment_planned(str(state.get("incident_id", "")), actions)
+    await progress.containment_planned(incident_id, actions)
 
-    return {
-        "containment_actions": actions,
-        "timeline": [
+    events = [
+        {
+            "at": now_iso(),
+            "actor": "containment_planner",
+            "event": f"Proposed {len(actions)} containment action(s)",
+        }
+    ]
+    if autonomous:
+        # Autonomous execution has to leave a mark before it happens, not only
+        # in the executed list afterwards — otherwise the record cannot show
+        # that a human was never asked.
+        events.append(
             {
                 "at": now_iso(),
                 "actor": "containment_planner",
-                "event": f"Proposed {len(actions)} containment action(s)",
+                "event": (
+                    f"Mode allows {len(autonomous)} action(s) to run without approval: "
+                    f"{', '.join(autonomous)}"
+                ),
             }
-        ],
-    }
+        )
+
+    return {"containment_actions": actions, "timeline": events}
+
+
+async def _apply_mode(
+    incident_id: str, actions: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """Re-gate the plan under the incident's autonomy mode. Never raises."""
+    from app.services import modes
+
+    settings = get_settings()
+    try:
+        from app.services import incidents
+
+        record = await incidents.get_incident(incident_id) if incident_id else None
+    except Exception as exc:  # noqa: BLE001 — an unreadable mode must not lose the plan
+        log.warning("containment.mode_read_failed", incident_id=incident_id, error=str(exc))
+        record = None
+
+    # No record, no mode, no autonomy. Failing closed is the only safe direction
+    # for a function whose job is deciding what may run unsupervised.
+    mode = modes.get((record or {}).get("mode") or settings.ir_mode_default)
+    return modes.apply_to_actions(actions, mode, settings.ir_autonomous_max_risk)
 
 
 async def approval_node(state: IncidentState) -> dict[str, Any]:
