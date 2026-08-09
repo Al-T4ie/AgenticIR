@@ -85,9 +85,25 @@ async def _handle_mention(event: dict[str, Any]) -> None:
         )
         return
 
+    # Inside an incident's own room, every mention is about that incident —
+    # there is no thread to key off, the channel *is* the key. Skipped entirely
+    # when rooms are off: there is nothing to find, and this runs on every
+    # mention in every channel the bot is in.
+    room_incident = (
+        await incidents.get_by_slack_channel(channel)
+        if get_settings().slack_warroom_enabled
+        else None
+    )
+
+    # "mode winger" is a control instruction, not information about the
+    # incident. Checked before anything else so it can never be mistaken for
+    # telemetry and fed to the graph.
+    if await _handle_mode_command(text, room_incident, channel, thread_ts, user):
+        return
+
     # A mention inside an existing incident thread is a follow-up, not a new
     # incident.
-    existing = await incidents.get_by_slack_thread(channel, thread_ts)
+    existing = await incidents.get_by_slack_thread(channel, thread_ts) or room_incident
     if existing:
         await _handle_followup(existing, text, channel, thread_ts, user=user)
         return
@@ -110,6 +126,112 @@ async def _handle_mention(event: dict[str, Any]) -> None:
     )
     await notifier.acknowledge(channel, thread_ts, record["id"], record["title"])
     log.info("slack.investigation_started", incident_id=record["id"], user=user)
+
+
+_MODE_RE = re.compile(r"^\s*(?:mode|switch|go|set\s+mode)\b[:\s]*([a-z\-_ ]*)$", re.I)
+
+
+async def _handle_mode_command(
+    text: str, incident: dict[str, Any] | None, channel: str, thread_ts: str, user: str
+) -> bool:
+    """`@IR mode winger`. Returns True if this was a mode instruction.
+
+    Deliberately narrow: only an exact `mode …` phrasing counts. Anything looser
+    would let a sentence like "we should go autonomous on this" silently hand a
+    machine permission to act, which is not a thing to infer from prose.
+    """
+    match = _MODE_RE.match(text)
+    if not match:
+        return False
+
+    from app.services import modes
+
+    settings = get_settings()
+    asked = match.group(1).strip()
+
+    if incident is None:
+        await notifier.post(
+            channel,
+            text=f"Modes are per incident — ask me in an incident's channel. {modes.choices()}",
+            thread_ts=thread_ts,
+        )
+        return True
+
+    current = modes.get(incident.get("mode"))
+    if not asked:
+        await notifier.post(
+            channel,
+            text=f"Currently *{current.label}* — {current.blurb}\n{modes.choices()}",
+            thread_ts=thread_ts,
+        )
+        return True
+
+    target = modes.resolve(asked)
+    if target is None:
+        await notifier.post(
+            channel,
+            text=f"`{asked}` is not a mode. {modes.choices()}",
+            thread_ts=thread_ts,
+        )
+        return True
+
+    opened = incident.get("channel_opened_at")
+    opened_at = _parse_ts(opened)
+    # Dropping *down* the ladder is always allowed. The wait exists to stop
+    # someone granting autonomy before they have read anything, not to trap
+    # them in a posture they have decided against.
+    widening = _rank(target.key) > _rank(current.key)
+    if widening and not modes.unlocked(opened_at, after_seconds=settings.ir_mode_unlock_seconds):
+        wait = modes.seconds_until_unlock(opened_at, after_seconds=settings.ir_mode_unlock_seconds)
+        await notifier.post(
+            channel,
+            text=(
+                f"Not yet — {wait // 60}m{wait % 60:02d}s before I can move up to "
+                f"*{target.label}*. Read what I have first. You can drop to a lower "
+                "mode at any time."
+            ),
+            thread_ts=thread_ts,
+        )
+        return True
+
+    await incidents.set_mode(incident["id"], target.key, by=user)
+    await incidents.append_timeline(
+        incident["id"],
+        {"actor": f"human:{user}", "event": f"Mode set to {target.label} ({target.key})"},
+    )
+    ceiling = (
+        f" Acting unattended up to *{settings.ir_autonomous_max_risk}* risk; "
+        "irreversible actions still come to you."
+        if target.key == modes.RESPONDER
+        else ""
+    )
+    await notifier.post(
+        channel,
+        text=f":gear: Mode → *{target.label}* (by <@{user}>). {target.blurb}{ceiling}",
+        thread_ts=thread_ts,
+    )
+    log.info("slack.mode_set", incident_id=incident["id"], mode=target.key, user=user)
+    return True
+
+
+_LADDER = {"spectator": 0, "winger": 1, "responder": 2}
+
+
+def _rank(key: str) -> int:
+    return _LADDER.get(key, 0)
+
+
+def _parse_ts(value: Any) -> Any:
+    from datetime import datetime
+
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return value
 
 
 async def _question_about_existing(channel: str, text: str, user: str) -> dict[str, Any] | None:
