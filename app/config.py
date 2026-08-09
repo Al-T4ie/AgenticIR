@@ -99,6 +99,38 @@ class Settings(BaseSettings):
     # makes a wrong call indistinguishable from having seen nothing.
     slack_poll_report_decisions: bool = True
 
+    # ── Incident war rooms ──
+    # Give an incident its own channel instead of a thread in the shared one.
+    # Needs a Slack scope the bot does not have by default: `groups:write` for
+    # private channels, `channels:manage` for public ones, plus the matching
+    # invite scope. Creation fails closed — the incident falls back to a thread
+    # rather than going unannounced.
+    slack_warroom_enabled: bool = False
+    # Private by default. Incident channels name individual staff, and
+    # `#inc-…` discussing a named employee should not be browsable by the
+    # whole workspace before anyone has established what happened.
+    slack_warroom_private: bool = True
+    slack_warroom_prefix: str = "inc"
+    # Comma-separated Slack user ids always pulled into a new incident channel.
+    slack_warroom_invite: str = ""
+    # Announce the new channel back in the channel the request came from,
+    # otherwise the people who asked lose track of where it went.
+    slack_warroom_announce: bool = True
+
+    # ── Agent autonomy ──
+    # Where every incident starts. See app/services/modes.py.
+    ir_mode_default: str = "spectator"
+    # How long the channel must have been open before the ladder unlocks. The
+    # first minutes are when the picture is worst and the temptation to hand
+    # over control is highest.
+    ir_mode_unlock_seconds: int = 300
+    # Highest risk an action may carry and still run unattended in responder
+    # mode: low | medium | high | all | none. Irreversible actions are gated
+    # regardless unless this is `all`.
+    ir_autonomous_max_risk: str = "medium"
+    # Catch-up cadence in winger and responder modes.
+    ir_digest_seconds: int = 600
+
     # ── n8n ──
     n8n_enabled: bool = False
     n8n_base_url: str = "http://n8n:5678"
@@ -124,6 +156,8 @@ class Settings(BaseSettings):
         "slack_poll_max_actions",
         "slack_poll_lookback_minutes",
         "slack_poll_thread_window_hours",
+        "ir_mode_unlock_seconds",
+        "ir_digest_seconds",
         mode="before",
     )
     @classmethod
