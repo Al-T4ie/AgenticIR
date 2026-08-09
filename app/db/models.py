@@ -56,6 +56,19 @@ class Incident(Base):
     slack_channel: Mapped[str] = mapped_column(String(64), default="")
     slack_thread_ts: Mapped[str] = mapped_column(String(64), default="")
 
+    # How much rope the bot has here: spectator, winger or responder. Per
+    # incident rather than global, because the posture that suits a contained
+    # phishing report is not the one that suits a live exfiltration.
+    mode: Mapped[str] = mapped_column(String(24), default="spectator")
+    mode_set_by: Mapped[str] = mapped_column(String(64), default="")
+    # When the incident's own channel was opened. The mode ladder unlocks a few
+    # minutes after this, so nobody hands over control before reading anything.
+    channel_opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Last catch-up digest, so the ten-minute cadence survives a restart.
+    last_digest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
@@ -89,6 +102,12 @@ class Incident(Base):
             "pending_notes": self.pending_notes or [],
             "slack_channel": self.slack_channel,
             "slack_thread_ts": self.slack_thread_ts,
+            "mode": self.mode or "spectator",
+            "mode_set_by": self.mode_set_by,
+            "channel_opened_at": (
+                self.channel_opened_at.isoformat() if self.channel_opened_at else None
+            ),
+            "last_digest_at": self.last_digest_at.isoformat() if self.last_digest_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
