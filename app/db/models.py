@@ -113,6 +113,11 @@ class Incident(Base):
         }
         if include_report:
             data["report"] = self.report
+            # The originating alert is stored but was never serialised, so no
+            # consumer could see what the investigation was actually handed —
+            # which also made the detection lag uncomputable. Detail views only:
+            # a raw SIEM payload per row would bloat every list response.
+            data["alert"] = self.alert or {}
         return data
 
 
