@@ -86,6 +86,14 @@ graph: ## Print the graph topology as mermaid
 smoke: ## Probe a running deployment (BASE_URL=... API_KEY=...)
 	@bash infra/scripts/smoke-test.sh
 
+.PHONY: e2e
+e2e: ## Drive one incident end to end and grade the deployment (BASE_URL=... API_KEY=...)
+	@python3 infra/scripts/e2e_scenario.py $(ARGS)
+
+.PHONY: e2e-surface
+e2e-surface: ## The same harness, contract and ops checks only — no LLM spend
+	@python3 infra/scripts/e2e_scenario.py --surface-only
+
 # ── Infrastructure ───────────────────────────────────────────────────────────
 .PHONY: tf-init
 tf-init: ## terraform init

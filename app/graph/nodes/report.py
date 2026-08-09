@@ -35,6 +35,22 @@ def _fallback_report(state: IncidentState) -> str:
     return "\n".join(lines)
 
 
+def _verdict_line(state: IncidentState) -> str:
+    """The authoritative header, built from the record rather than written.
+
+    Asked to open with a verdict line, the model writes its own reading of the
+    evidence: one live run headed a report "Likely malicious · high · 80%" on an
+    incident recorded `inconclusive`. Whichever was right, a report that
+    contradicts the field the dashboard, the metrics and the audit trail all use
+    is worse than either. So the line is composed here and the model never gets
+    to restate it.
+    """
+    verdict = str(state.get("verdict", "inconclusive")).replace("_", " ")
+    severity = str(state.get("severity", "informational"))
+    confidence = float(state.get("confidence", 0.0) or 0.0)
+    return f"*{verdict} · {severity} · {confidence:.0%} confidence*"
+
+
 async def report_node(state: IncidentState) -> dict[str, Any]:
     findings = state.get("findings", [])
     actions = state.get("containment_actions", [])
@@ -74,7 +90,7 @@ async def report_node(state: IncidentState) -> dict[str, Any]:
         context += ["", "ERRORS:", "\n".join(state["errors"][:10])]
 
     try:
-        body = await llm.text(
+        body = f"{_verdict_line(state)}\n" + await llm.text(
             "supervisor",
             [SystemMessage(content=prompts.REPORT), HumanMessage(content="\n".join(context))],
         )

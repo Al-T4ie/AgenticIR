@@ -6,10 +6,11 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import SEVERITY_ORDER, get_settings
 from app.graph import llm, prompts
+from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
 from app.graph.state import IncidentState
 from app.observability import concise_error, get_logger
@@ -28,6 +29,12 @@ class Review(BaseModel):
     feedback: str = Field(
         default="", description="If needs_more_work: precisely what must be investigated next"
     )
+    questions_for_humans: list[str] = Field(
+        default_factory=list,
+        description="At most 3 gaps only the responders can close. Empty is valid.",
+    )
+
+    _coerce = field_validator("questions_for_humans", mode="before")(coerce_json_list)
 
 
 def _highest_severity(findings: list[dict[str, Any]]) -> str:
@@ -67,6 +74,15 @@ async def critic_node(state: IncidentState) -> dict[str, Any]:
     ]
     if state.get("errors"):
         context += ["", "SPECIALIST ERRORS:", "\n".join(state["errors"][-10:])]
+    if state.get("open_questions"):
+        # Show what has already been asked, so the critic repeats what still
+        # matters instead of re-asking in different words every round.
+        context += [
+            "",
+            "ALREADY ASKED OF THE RESPONDERS (repeat only those still unanswered "
+            "and still material):",
+            "\n".join(f"- {q}" for q in state["open_questions"]),
+        ]
 
     try:
         review = await llm.structured(
@@ -86,6 +102,7 @@ async def critic_node(state: IncidentState) -> dict[str, Any]:
             "manual analyst review required.",
             needs_more_work=False,
             feedback="",
+            questions_for_humans=list(state.get("open_questions", []) or []),
         )
 
     severity = review.severity.lower()
@@ -103,6 +120,8 @@ async def critic_node(state: IncidentState) -> dict[str, Any]:
         needs_more_work=needs_more,
         round=current_round,
     )
+    questions = [q.strip() for q in review.questions_for_humans if q and q.strip()][:3]
+
     await progress.reviewed(
         str(state.get("incident_id", "")),
         review.verdict,
@@ -116,6 +135,7 @@ async def critic_node(state: IncidentState) -> dict[str, Any]:
         "severity": severity,
         "confidence": review.confidence,
         "summary": review.summary,
+        "open_questions": questions,
         "needs_more_work": needs_more,
         "critic_feedback": review.feedback if needs_more else "",
         "timeline": [

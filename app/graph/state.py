@@ -92,6 +92,10 @@ class IncidentState(TypedDict, total=False):
     confidence: float
     summary: str
 
+    # What the agents could not determine and a human could. Carried on the
+    # incident so it can be asked once, tracked, and re-asked while unanswered.
+    open_questions: list[str]
+
     # ── Response ──
     containment_actions: list[dict[str, Any]]
     approval: dict[str, Any]
@@ -135,6 +139,7 @@ def new_state(
         verdict="inconclusive",
         confidence=0.0,
         summary="",
+        open_questions=[],
         containment_actions=[],
         approval={},
         executed_actions=[],

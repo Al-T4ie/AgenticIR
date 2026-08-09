@@ -26,6 +26,7 @@ def slack_on(monkeypatch: pytest.MonkeyPatch):
         slack_poll_max_actions=3,
         slack_poll_lookback_minutes=60,
         slack_poll_thread_window_hours=24,
+        slack_poll_report_decisions=True,
         polled_channels=["C_TEST"],
         slack_bot_token="xoxb-test",
     )
@@ -238,20 +239,22 @@ async def test_information_arriving_mid_run_is_deferred_not_dropped(slack_on, po
 
     assert result == "queued"
     assert deferred == ["1700000009.000000"]
-    assert "fold that in" in posted[0]["text"]
+    assert "folding in" in posted[0]["text"]
 
 
-async def test_pending_approval_blocks_a_re_assessment(slack_on, posted, monkeypatch):
-    """Re-planning under a pending approval would invalidate what the human is deciding."""
+async def test_information_arriving_under_a_pending_approval_is_kept(slack_on, posted, monkeypatch):
+    """Re-planning under a pending approval would invalidate the actions being
+    decided on — but the approver is exactly who needs the new fact, so it is
+    parked and acknowledged rather than refused."""
 
     async def fake_follow_up(incident_id, note, *, reported_by=""):  # noqa: ARG001
-        return "awaiting_approval"
+        return "queued_for_approval"
 
     monkeypatch.setattr(poller.runner, "follow_up_investigation", fake_follow_up)
     monkeypatch.setattr(
         poller.incidents, "get_incident", lambda _id: _async(_incident(status="awaiting_approval"))
     )
-    monkeypatch.setattr(poller.slack_watch, "release", _noop)
+    monkeypatch.setattr(poller.slack_watch, "defer", lambda *a, **k: _async(True))
 
     result = await poller._act(
         "C_TEST",
@@ -266,8 +269,8 @@ async def test_pending_approval_blocks_a_re_assessment(slack_on, posted, monkeyp
         "INC-1",
     )
 
-    assert result == "blocked_on_approval"
-    assert "containment decision" in posted[0]["text"]
+    assert result == "queued_for_approval"
+    assert posted and "Noted" in posted[0]["text"]
 
 
 async def test_ignored_messages_do_nothing(slack_on, posted, monkeypatch):
@@ -303,22 +306,28 @@ async def test_update_without_an_incident_is_not_guessed_at(slack_on, posted, mo
 
 
 # ── Revising a closed incident ───────────────────────────────────────────────
-async def test_follow_up_refuses_while_the_run_is_in_flight(monkeypatch):
+@pytest.mark.parametrize(
+    ("status", "outcome"),
+    [("running", "queued"), ("awaiting_approval", "queued_for_approval")],
+)
+async def test_information_is_never_rejected_for_bad_timing(monkeypatch, status, outcome):
+    """Telemetry does not wait for the incident to be idle. A busy incident parks
+    the note; it must never throw it away."""
     from app.services import runner
 
-    monkeypatch.setattr(
-        runner.incidents, "get_incident", lambda _id: _async(_incident(status="running"))
-    )
-    assert await runner.follow_up_investigation("INC-1", "more info") == "queued"
+    queued: list[tuple[str, str]] = []
 
-
-async def test_follow_up_refuses_while_an_approval_is_pending(monkeypatch):
-    from app.services import runner
+    async def fake_queue(incident_id, note, reported_by=""):  # noqa: ARG001
+        queued.append((incident_id, note))
+        return len(queued)
 
     monkeypatch.setattr(
-        runner.incidents, "get_incident", lambda _id: _async(_incident(status="awaiting_approval"))
+        runner.incidents, "get_incident", lambda _id: _async(_incident(status=status))
     )
-    assert await runner.follow_up_investigation("INC-1", "more info") == "awaiting_approval"
+    monkeypatch.setattr(runner.incidents, "queue_note", fake_queue)
+
+    assert await runner.follow_up_investigation("INC-1", "more info") == outcome
+    assert queued == [("INC-1", "more info")]
 
 
 async def test_follow_up_on_an_unknown_incident(monkeypatch):
@@ -395,11 +404,310 @@ async def test_a_revision_is_labelled_even_when_it_stops_for_approval(monkeypatc
     monkeypatch.setattr(progress_module, "emit", fake_emit)
 
     await runner._label_revision("INC-1", {"revision": 2})
-    assert said and "revision 2" in said[0]
+    assert said and "Revision 2" in said[0]
 
     said.clear()
     await runner._label_revision("INC-1", {"revision": 0})
     assert said == []
+
+
+# ── Multi-source intake ──────────────────────────────────────────────────────
+async def test_an_alert_with_a_channel_but_no_thread_opens_one(slack_on, monkeypatch):
+    """A SIEM alert routed to a channel has nowhere to narrate until a thread
+    exists, so it would go silent until the final report."""
+    from app.services import runner
+
+    monkeypatch.setattr(runner, "get_settings", lambda: slack_on)
+    monkeypatch.setattr(
+        runner.incidents,
+        "create_incident",
+        lambda **kw: _async(
+            {
+                "id": kw["incident_id"],
+                "thread_id": kw["thread_id"],
+                "title": "SIEM alert",
+                "slack_thread_ts": "",
+            }
+        ),
+    )
+    attached: list[tuple[str, str, str]] = []
+
+    async def fake_attach(incident_id, channel, ts):
+        attached.append((incident_id, channel, ts))
+
+    monkeypatch.setattr(runner.incidents, "attach_slack_thread", fake_attach)
+    monkeypatch.setattr(runner, "_spawn", lambda coro: coro.close())
+
+    from app.slack import notifier
+
+    monkeypatch.setattr(notifier, "acknowledge", lambda *a, **k: _async("1700000000.000900"))
+
+    record = await runner.start_investigation(
+        alert={"title": "SIEM alert"}, source="siem", slack_channel="C_TEST"
+    )
+
+    assert record["slack_thread_ts"] == "1700000000.000900"
+    assert attached and attached[0][1:] == ("C_TEST", "1700000000.000900")
+
+
+async def test_a_failed_acknowledgement_still_starts_the_run(slack_on, monkeypatch):
+    """Slack being down must degrade narration, not block the investigation."""
+    from app.services import runner
+
+    monkeypatch.setattr(runner, "get_settings", lambda: slack_on)
+    monkeypatch.setattr(
+        runner.incidents,
+        "create_incident",
+        lambda **kw: _async(
+            {
+                "id": kw["incident_id"],
+                "thread_id": kw["thread_id"],
+                "title": "t",
+                "slack_thread_ts": "",
+            }
+        ),
+    )
+    started: list[Any] = []
+    monkeypatch.setattr(runner, "_spawn", lambda coro: (coro.close(), started.append(1)))
+
+    from app.slack import notifier
+
+    async def boom(*a, **k):
+        raise RuntimeError("slack down")
+
+    monkeypatch.setattr(notifier, "acknowledge", boom)
+
+    record = await runner.start_investigation(alert={"title": "t"}, slack_channel="C_TEST")
+    assert record["slack_thread_ts"] == ""
+    assert started == [1]
+
+
+# ── Visibility ───────────────────────────────────────────────────────────────
+async def test_the_sweep_publishes_what_it_decided_and_why(slack_on, posted):
+    await poller._report_decisions(
+        "C_TEST",
+        [
+            {
+                "applied": "investigate",
+                "incident_id": "INC-9",
+                "user": "U1",
+                "text": "encoded powershell on FIN-WS-04",
+                "reason": "new alert, no existing incident",
+            },
+            {
+                "applied": "ignore",
+                "incident_id": "",
+                "user": "U2",
+                "text": "thanks!",
+                "reason": "acknowledgement",
+            },
+        ],
+    )
+
+    assert len(posted) == 1
+    body = posted[0]["text"]
+    assert "2 message(s) read" in body and "1 acted on" in body
+
+
+async def test_decision_reporting_can_be_switched_off(slack_on, posted):
+    slack_on.slack_poll_report_decisions = False
+    await poller._report_decisions(
+        "C_TEST",
+        [{"applied": "ignore", "incident_id": "", "user": "U", "text": "x", "reason": "y"}],
+    )
+    assert posted == []
+
+
+# ── Parked information is applied, not lost ──────────────────────────────────
+async def test_everything_queued_is_applied_as_one_revision(monkeypatch):
+    """Five facts that landed during one investigation are five facts about the
+    same incident, not five reasons to re-investigate it."""
+    from app.services import runner
+
+    applied: list[str] = []
+
+    monkeypatch.setattr(
+        runner.incidents,
+        "drain_notes",
+        lambda _id: _async(
+            [
+                {"by": "zscaler", "note": "47 beacons to 198.51.100.77"},
+                {"by": "entra-id", "note": "MFA device registered from Bucharest"},
+            ]
+        ),
+    )
+
+    async def fake_follow_up(incident_id, note, *, reported_by=""):  # noqa: ARG001
+        applied.append(note)
+        return "revising"
+
+    monkeypatch.setattr(runner, "follow_up_investigation", fake_follow_up)
+    await runner._apply_pending("INC-1")
+
+    assert len(applied) == 1
+    assert "47 beacons" in applied[0] and "Bucharest" in applied[0]
+
+
+async def test_nothing_queued_starts_nothing(monkeypatch):
+    from app.services import runner
+
+    monkeypatch.setattr(runner.incidents, "drain_notes", lambda _id: _async([]))
+
+    async def explode(*a, **k):
+        raise AssertionError("should not re-run with an empty queue")
+
+    monkeypatch.setattr(runner, "follow_up_investigation", explode)
+    await runner._apply_pending("INC-1")
+
+
+# ── Questions for the humans ─────────────────────────────────────────────────
+async def test_questions_are_asked_once_not_every_round(monkeypatch):
+    """The critic carries unanswered questions forward each revision. Re-posting
+    them every time is nagging, not diligence."""
+    from app.services import runner
+
+    asked: list[list[str]] = []
+
+    from app.slack import progress as progress_module
+
+    async def fake_ask(incident_id, questions):  # noqa: ARG001
+        asked.append(list(questions))
+
+    monkeypatch.setattr(progress_module, "ask_humans", fake_ask)
+
+    state = {"open_questions": ["Is FIN-WS-04 a build agent?", "Is 198.51.100.77 approved?"]}
+
+    await runner._ask_open_questions("INC-1", state, asked_before=set())
+    assert asked == [["Is FIN-WS-04 a build agent?", "Is 198.51.100.77 approved?"]]
+
+    # Second pass: both already asked, so nothing is posted.
+    asked.clear()
+    await runner._ask_open_questions("INC-1", state, asked_before=set(state["open_questions"]))
+    assert asked == []
+
+    # A genuinely new question still gets through.
+    asked.clear()
+    state["open_questions"] = [*state["open_questions"], "Was there a deploy tonight?"]
+    await runner._ask_open_questions(
+        "INC-1", state, asked_before={"Is FIN-WS-04 a build agent?", "Is 198.51.100.77 approved?"}
+    )
+    assert asked == [["Was there a deploy tonight?"]]
+
+
+# ── The report never contradicts the record ──────────────────────────────────
+def test_the_verdict_line_comes_from_the_record_not_the_model():
+    """A live run headed a report "Likely malicious · high · 80%" on an incident
+    recorded `inconclusive`. Whichever reading was right, a report that
+    contradicts the field the dashboard and the audit trail use is worse."""
+    from app.graph.nodes.report import _verdict_line
+
+    line = _verdict_line({"verdict": "true_positive", "severity": "critical", "confidence": 0.8})
+    assert line == "*true positive · critical · 80% confidence*"
+
+    # Missing values must not produce a broken header.
+    assert _verdict_line({}) == "*inconclusive · informational · 0% confidence*"
+    assert "0%" in _verdict_line({"confidence": None})
+
+
+# ── Asking about work already done is not a new incident ─────────────────────
+async def test_a_request_for_a_summary_is_answered_not_investigated(slack_on, posted, monkeypatch):
+    """Live: "give me a diagram of the timeline of the incident so far" opened a
+    full multi-agent security investigation of the request itself. Phrasing an
+    ask as a command rather than a question does not make it an incident."""
+    from app.slack import handlers
+
+    answered: list[tuple[str, str]] = []
+
+    async def fake_answer(incident, text, channel, thread_ts):  # noqa: ARG001
+        answered.append((incident["id"], text))
+
+    async def never(*a, **k):
+        raise AssertionError("must not start an investigation")
+
+    monkeypatch.setattr(handlers, "answer_followup", fake_answer)
+    monkeypatch.setattr(handlers.runner, "start_investigation", never)
+    monkeypatch.setattr(handlers.incidents, "get_by_slack_thread", lambda *a: _async(None))
+    monkeypatch.setattr(handlers, "_question_about_existing", lambda *a: _async(_incident()))
+
+    await handlers._handle_mention(
+        {
+            "channel": "C_TEST",
+            "user": "U_HUMAN",
+            "text": "<@U_BOT> give me a diagram of the timeline of the incident so far",
+            "ts": "1700000010.000000",
+        }
+    )
+
+    assert answered and answered[0][0] == "INC-1"
+
+
+async def test_the_answer_can_see_the_whole_record(slack_on, posted, monkeypatch):
+    """A timeline question is unanswerable while the timeline is the one field
+    left out — and the failure is a confident answer from the rest."""
+    from app.graph import llm as llm_module
+    from app.slack import handlers
+
+    seen: dict[str, str] = {}
+
+    async def fake_text(role, messages):  # noqa: ARG001
+        seen["prompt"] = messages[-1].content
+        return "• 18:22 Outlook spawned powershell\n• 18:23 beaconing began"
+
+    monkeypatch.setattr(llm_module, "text", fake_text)
+
+    await handlers.answer_followup(
+        _incident(
+            timeline=[{"at": "18:22", "actor": "intake", "event": "Incident opened"}],
+            executed_actions=[{"action": "isolate_host", "target": "FIN-WS-04"}],
+            open_questions=["Is FIN-WS-04 a build agent?"],
+        ),
+        "give me the timeline",
+        "C_TEST",
+        "1700000000.000001",
+    )
+
+    assert "Incident opened" in seen["prompt"]
+    assert "isolate_host" in seen["prompt"]
+    assert "build agent" in seen["prompt"]
+    # The question is shown next to the answer so a wrong pickup is visible.
+    assert any("give me the timeline" in p["text"] for p in posted) or posted
+
+
+# ── Finding inflation ────────────────────────────────────────────────────────
+def test_a_specialist_cannot_pad_its_way_to_seven_findings():
+    """Live: the same specialist on the same alert reported 2, then 5, then 7
+    findings across rounds, and the reviewer downgraded a true positive to
+    inconclusive as the padding accumulated. More work made the verdict worse."""
+    from app.graph.nodes.specialist import MAX_FINDINGS_PER_SPECIALIST, ReportedFinding, _best
+
+    def f(title: str, severity: str, confidence: float) -> ReportedFinding:
+        return ReportedFinding(title=title, detail="d", severity=severity, confidence=confidence)
+
+    kept = _best(
+        [
+            f("filler", "informational", 0.2),
+            f("the beacon", "critical", 0.9),
+            f("more filler", "informational", 0.1),
+            f("the loader", "high", 0.8),
+            f("noise", "low", 0.5),
+            f("the mfa registration", "high", 0.9),
+            f("padding", "informational", 0.3),
+        ]
+    )
+
+    assert len(kept) == MAX_FINDINGS_PER_SPECIALIST
+    titles = [k.title for k in kept]
+    # Severity first, then confidence — the signal survives, the filler does not.
+    assert titles[0] == "the beacon"
+    assert "the mfa registration" in titles and "the loader" in titles
+    assert "padding" not in titles
+
+
+def test_a_short_report_is_left_exactly_as_it_is():
+    from app.graph.nodes.specialist import ReportedFinding, _best
+
+    findings = [ReportedFinding(title="only one", detail="d")]
+    assert _best(findings) is findings
 
 
 # ── Planning hygiene ─────────────────────────────────────────────────────────

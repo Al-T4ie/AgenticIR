@@ -92,6 +92,15 @@ async def _handle_mention(event: dict[str, Any]) -> None:
         await _handle_followup(existing, text, channel, thread_ts, user=user)
         return
 
+    # Not every mention is an alert. "@IR what did we conclude about FIN-WS-04?"
+    # asked in the channel used to spin up a fresh multi-agent investigation of
+    # the question itself; it should be answered from the incident it refers to.
+    target = await _question_about_existing(channel, text, user)
+    if target is not None:
+        log.info("slack.answering_from_record", incident_id=target["id"], user=user)
+        await answer_followup(target, text, channel, thread_ts)
+        return
+
     record = await runner.start_investigation(
         question=text,
         alert={"title": text[:200], "reported_by": user, "channel": channel, "raw": text},
@@ -101,6 +110,28 @@ async def _handle_mention(event: dict[str, Any]) -> None:
     )
     await notifier.acknowledge(channel, thread_ts, record["id"], record["title"])
     log.info("slack.investigation_started", incident_id=record["id"], user=user)
+
+
+async def _question_about_existing(channel: str, text: str, user: str) -> dict[str, Any] | None:
+    """The incident this mention is asking about, or None to investigate afresh."""
+    try:
+        from app.slack import poller
+
+        known = await poller._recent_incidents(channel)
+        if not known:
+            return None
+        dispositions = await poller.classify(
+            [{"ts": "mention", "user": user, "text": text, "thread_ts": "", "incident_id": ""}],
+            known,
+        )
+    except Exception as exc:  # noqa: BLE001 — fall through to investigating
+        log.warning("slack.mention_classification_failed", error=str(exc))
+        return None
+
+    decision = dispositions.get("mention")
+    if decision is None or decision.action != "answer":
+        return None
+    return next((i for i in known if i["id"] == decision.incident_id), None)
 
 
 async def _handle_followup(
@@ -185,12 +216,24 @@ async def answer_followup(
 
     from app.graph import llm
 
+    # The whole record, not a slice of it. "Give me the timeline" is a fair
+    # question that could not be answered while the timeline was the one field
+    # left out — and the failure mode is a confident answer from the parts that
+    # were supplied, rather than an admission that the data was missing.
     context = json.dumps(
         {
+            "id": incident.get("id"),
+            "status": incident.get("status"),
             "verdict": incident.get("verdict"),
             "severity": incident.get("severity"),
+            "confidence": incident.get("confidence"),
             "summary": incident.get("summary"),
-            "findings": incident.get("findings", [])[:20],
+            "timeline": incident.get("timeline", [])[-40:],
+            "findings": incident.get("findings", [])[:30],
+            "containment_actions": incident.get("containment_actions", []),
+            "executed_actions": incident.get("executed_actions", []),
+            "open_questions": incident.get("open_questions", []),
+            "errors": incident.get("errors", [])[-5:],
             "report": (incident.get("report") or "")[:6000],
         },
         default=str,
@@ -201,20 +244,48 @@ async def answer_followup(
             [
                 SystemMessage(
                     content=(
-                        "You are answering an analyst's follow-up about a completed "
-                        "investigation. Answer only from the incident record supplied. "
-                        "If the record does not contain the answer, say so plainly and "
-                        "suggest opening a new investigation. Use Slack markdown."
+                        "You are answering an analyst mid-incident, in Slack, about an "
+                        "investigation that has already run. Answer only from the incident "
+                        "record supplied.\n\n"
+                        "At most three sentences — unless they asked for a timeline, a "
+                        "sequence or a list, in which case give exactly that as compact "
+                        "bullets, newest last, one line each.\n\n"
+                        "No preamble, no restating the question, no summary of the incident "
+                        "they already have. If the record does not contain the answer, say "
+                        "so in one line and name the one thing that would settle it. Never "
+                        "infer events that are not in the record. Slack markdown."
                     )
                 ),
-                HumanMessage(content=f"INCIDENT RECORD:\n{context}\n\nQUESTION: {text}"),
+                HumanMessage(content=f"INCIDENT RECORD:\n{context}\n\nASKED: {text}"),
             ],
         )
     except Exception as exc:
         log.error("slack.followup_failed", error=str(exc))
         answer = f"Couldn't answer that: {exc}"
 
-    await notifier.post(channel, text=answer, thread_ts=thread_ts)
+    # Show the question that was picked up alongside the answer. When the bot
+    # answers something nobody asked — the wrong message, or the wrong reading
+    # of the right one — that is only visible if the question is on the record
+    # next to the answer.
+    await notifier.post(
+        channel,
+        text=answer,
+        blocks_payload=[
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f":speech_balloon: answering *{incident['id']}* — "
+                        f"_{' '.join(text.split())[:250]}_",
+                    }
+                ],
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": answer[:2900]}},
+        ],
+        thread_ts=thread_ts,
+    )
+    log.info("slack.answered", incident_id=incident["id"], chars=len(answer))
 
 
 async def handle_interaction(payload: dict[str, Any]) -> None:
@@ -274,19 +345,14 @@ async def handle_slash_command(form: dict[str, str]) -> dict[str, Any]:
         }
 
     async def _start() -> None:
-        record = await runner.start_investigation(
+        # start_investigation opens the thread and acknowledges in it, so the
+        # run has somewhere to narrate from its first step.
+        await runner.start_investigation(
             question=text,
             alert={"title": text[:200], "reported_by": user, "raw": text},
             source="slack",
             slack_channel=channel,
         )
-        ts = await notifier.post(
-            channel,
-            text=f"Investigating: {record['title']}",
-            blocks_payload=blocks.acknowledgement(record["id"], record["title"]),
-        )
-        if ts:
-            await incidents.attach_slack_thread(record["id"], channel, ts)
 
     _spawn(_start())
     return {"response_type": "in_channel", "text": f":mag: Starting investigation: _{text[:150]}_"}

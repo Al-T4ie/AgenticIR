@@ -76,6 +76,7 @@ services:
       SLACK_POLL_MAX_ACTIONS: ${SLACK_POLL_MAX_ACTIONS:-3}
       SLACK_POLL_LOOKBACK_MINUTES: ${SLACK_POLL_LOOKBACK_MINUTES:-60}
       SLACK_POLL_THREAD_WINDOW_HOURS: ${SLACK_POLL_THREAD_WINDOW_HOURS:-24}
+      SLACK_POLL_REPORT_DECISIONS: ${SLACK_POLL_REPORT_DECISIONS:-true}
 
       # ── External n8n ──
       # Must be reachable from this container. A public HTTPS URL always works;

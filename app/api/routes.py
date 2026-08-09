@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.api.deps import require_api_key, require_webhook_token
+from app.config import get_settings
 from app.observability import get_logger
 from app.services import incidents, runner
 
@@ -100,24 +101,27 @@ async def approve(incident_id: str, decision: ApprovalDecision) -> dict[str, Any
     return {"incident_id": incident_id, "status": "resuming"}
 
 
-@v1.post("/incidents/{incident_id}/follow-up", summary="Add information to an incident")
+@v1.post("/incidents/{incident_id}/follow-up", status_code=202, summary="Add information")
 async def follow_up(incident_id: str, payload: FollowUp) -> dict[str, Any]:
     """Fold new information into an incident and re-assess it.
 
     The re-run continues the same graph thread, so prior findings are kept and
-    the revised report lands in the original Slack thread.
+    the revised report lands in the original Slack thread. If the incident is
+    mid-run or awaiting a containment decision it cannot be re-entered yet; the
+    note is queued and applied the moment it goes idle. That is still an
+    acceptance — a 409 here told callers their telemetry had been rejected when
+    it had in fact been stored, which is the worst of both answers.
     """
     outcome = await runner.follow_up_investigation(
         incident_id, payload.note, reported_by=payload.reported_by
     )
     if outcome == "unknown":
         raise HTTPException(status_code=404, detail=f"Unknown incident {incident_id}")
-    if outcome != "revising":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Incident is {outcome.replace('_', ' ')}; it cannot absorb new information yet",
-        )
-    return {"incident_id": incident_id, "status": "revising"}
+    return {
+        "incident_id": incident_id,
+        "status": outcome,
+        "applied": outcome == "revising",
+    }
 
 
 @v1.post("/slack/poll", summary="Run a Slack channel sweep now")
@@ -151,7 +155,17 @@ async def inbound_alert(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     question = str(payload.get("question", ""))
     source = str(payload.get("source", "webhook"))
 
-    record = await runner.start_investigation(alert=alert, question=question, source=source)
+    # An alert from a SIEM belongs in front of the analysts, not only in the
+    # dashboard. Callers can override the destination; otherwise it goes to the
+    # configured channel, and the run narrates itself in the thread it opens.
+    settings = get_settings()
+    channel = str(payload.get("slack_channel") or "")
+    if not channel and settings.slack_enabled:
+        channel = settings.slack_default_channel
+
+    record = await runner.start_investigation(
+        alert=alert, question=question, source=source, slack_channel=channel
+    )
     return {
         "incident_id": record["id"],
         "thread_id": record["thread_id"],

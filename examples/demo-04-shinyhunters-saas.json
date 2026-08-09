@@ -1,0 +1,54 @@
+{
+  "title": "Unrecognised connected app performing bulk CRM export",
+  "rule_name": "SAAS-SF-0117: Connected app bulk API export exceeding baseline",
+  "severity": "critical",
+  "detected_at": "2026-08-09T13:41:06Z",
+  "source_system": "Salesforce Shield Event Monitoring",
+  "detection_source": "SaaS posture monitoring, corroborated by a helpdesk report",
+  "tenant": {
+    "platform": "Salesforce",
+    "org_id": "00D5f000008ZqKk",
+    "environment": "production",
+    "data_classification": "customer PII, contract values, pipeline"
+  },
+  "user": {
+    "username": "r.delacruz@example.com",
+    "display_name": "R. Dela Cruz",
+    "department": "Sales Operations",
+    "profile": "Sales Ops Manager",
+    "privileged": true,
+    "permissions": ["View All Data", "API Enabled", "Bulk API Hard Delete"],
+    "mfa": "Salesforce Authenticator (push)"
+  },
+  "connected_app": {
+    "name": "Data Loader",
+    "consumer_key": "3MVG9pRzvMkjMb6nY0dLPz8wQ2fXk1TjB4hVc7RmA0sN6uW3eL",
+    "authorised_at": "2026-08-09T12:58:44Z",
+    "authorised_from_ip": "185.65.135.42",
+    "oauth_scopes": ["api", "refresh_token", "offline_access", "full"],
+    "publisher": "unverified",
+    "note": "Name matches the legitimate Salesforce Data Loader, but the consumer key does not match the tenant's approved app inventory."
+  },
+  "activity": {
+    "api_calls": 1184,
+    "objects_queried": ["Account", "Contact", "Opportunity", "Case", "Attachment"],
+    "records_exported": 1204719,
+    "window_minutes": 43,
+    "baseline_records_per_day": 4200,
+    "export_method": "Bulk API 2.0 queryAll"
+  },
+  "network": {
+    "source_ip": "185.65.135.42",
+    "asn": "AS39351",
+    "asn_org": "Mullvad VPN",
+    "geo": "Amsterdam, NL",
+    "user_normal_asn": "AS15169 (corporate egress, Manila)",
+    "first_seen_for_user": true
+  },
+  "reported_by": {
+    "channel": "helpdesk ticket HD-88412",
+    "summary": "User called the service desk to ask whether the 'IT security team' should have needed her to approve an app on the Salesforce login screen. No engineer had contacted her."
+  },
+  "detail": "A connected app named 'Data Loader' was authorised against the production Salesforce org at 12:58 UTC from a Mullvad VPN exit node, then exported 1,204,719 records across five objects in 43 minutes using Bulk API 2.0 — roughly 287× the tenant's daily baseline. The authorising user reports she was walked through the authorisation over the phone by a caller claiming to be internal IT, who cited a 'mandatory data-integrity check' and read out a verification code. The consumer key is not in the approved app inventory. No endpoint malware alerted; the entire chain is SaaS-native and would not appear in EDR telemetry.",
+  "raw_events": 1184
+}
