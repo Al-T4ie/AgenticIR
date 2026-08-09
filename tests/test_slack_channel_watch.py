@@ -575,15 +575,32 @@ async def test_questions_are_asked_once_not_every_round(monkeypatch):
 
     monkeypatch.setattr(progress_module, "ask_humans", fake_ask)
 
+    # Each ask is also written to the timeline, because `open_questions` only
+    # holds what is outstanding now — a question that gets answered vanishes
+    # from it, and the report needs both halves.
+    logged: list[str] = []
+
+    async def fake_timeline(incident_id, entry):  # noqa: ARG001
+        logged.append(str(entry.get("event", "")))
+
+    monkeypatch.setattr(runner.incidents, "append_timeline", fake_timeline)
+
     state = {"open_questions": ["Is FIN-WS-04 a build agent?", "Is 198.51.100.77 approved?"]}
 
     await runner._ask_open_questions("INC-1", state, asked_before=set())
     assert asked == [["Is FIN-WS-04 a build agent?", "Is 198.51.100.77 approved?"]]
+    assert logged == [
+        "Asked: Is FIN-WS-04 a build agent?",
+        "Asked: Is 198.51.100.77 approved?",
+    ]
 
-    # Second pass: both already asked, so nothing is posted.
+    # Second pass: both already asked, so nothing is posted — and nothing is
+    # re-logged, or the report would show the same question three times.
     asked.clear()
+    logged.clear()
     await runner._ask_open_questions("INC-1", state, asked_before=set(state["open_questions"]))
     assert asked == []
+    assert logged == []
 
     # A genuinely new question still gets through.
     asked.clear()
