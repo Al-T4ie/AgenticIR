@@ -17,12 +17,15 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.observability import get_logger
-from app.services import incidents, runner, timeline
+from app.services import attack, incidents, runner, slackmd, stages, timeline
 
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/ui", tags=["ui"])
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
+# Reports are written in Slack markdown; the dashboard has to render it as HTML
+# rather than show the asterisks. Escaping happens inside the filter.
+templates.env.filters["slack_md"] = slackmd.to_html
 
 _COOKIE = "agenticir_key"
 
@@ -120,7 +123,44 @@ async def incident_detail(
             "incident": record,
             "pending_actions": pending,
             "chart": chart,
+            "pipeline": stages.derive(record),
+            "specialists": stages.specialist_detail(record),
+            "attack": attack.summarise(record.get("findings", [])),
             "can_approve": record["status"] == "awaiting_approval",
+        },
+    )
+
+
+@router.get("/incidents/{incident_id}/report", response_class=HTMLResponse)
+async def incident_report(
+    request: Request, incident_id: str, agenticir_key: str | None = Cookie(default=None)
+) -> Any:
+    """The published report, with the record that backs it, on its own page.
+
+    Separate from the incident view because it has a different reader: the
+    incident page is for working an incident, this is what gets read afterwards,
+    linked to, or printed for someone who was not in the channel.
+    """
+    if not _authed(agenticir_key):
+        return _login_redirect()
+
+    record = await incidents.get_incident(incident_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Unknown incident {incident_id}")
+
+    pipeline = stages.derive(record)
+    # A reopened incident is re-assessed before it is re-reported, so the stored
+    # report can describe a verdict the record has already moved past. Showing
+    # it without saying so presents a superseded conclusion as the current one.
+    reported = next(s["state"] for s in pipeline["steps"] if s["key"] == "report")
+    return templates.TemplateResponse(
+        request,
+        "report.html",
+        {
+            "incident": record,
+            "attack": attack.summarise(record.get("findings", [])),
+            "pipeline": pipeline,
+            "stale": bool(record.get("report")) and reported != "done",
         },
     )
 
