@@ -83,9 +83,18 @@
         <div class="n mono">{{ p.value }}</div>
         <div class="l">{{ p.label }}</div>
         <div class="muted note">{{ p.note }}</div>
+        {% if p.new_actors %}
+          <div class="tt-actors">
+            {% for a in p.new_actors %}<span class="agent-chip">{{ a }}</span>{% endfor %}
+          </div>
+        {% endif %}
       </div>
     {% endfor %}
   </div>
+  <p class="muted" style="margin:10px 0 0; font-size:12.5px">
+    Chips are the agents each phase <em>added</em> — every window starts when the
+    incident opened, so listing them cumulatively would repeat the same names five times.
+  </p>
 
   {% if timings.missing %}
     <p class="muted" style="margin:12px 0 0; font-size:13px">
@@ -164,6 +173,78 @@
     </details>
   {% endif %}
 </div>
+{% endif %}
+
+{# ── What the run cost, and what it touched ───────────────────────────────
+   Recorded per incident rather than read from Prometheus: the counters carry
+   no incident label, so they can say what the service did today but not what
+   this investigation spent. #}
+{% if not spend.empty %}
+<details class="panel fold" open>
+  <summary><h2>Agents, tokens and tools
+    <span class="muted" style="font-weight:400; font-size:14px">
+      — {{ '{:,}'.format(spend.total_tokens) }} tokens over {{ spend.llm_calls }} model call{{ '' if spend.llm_calls == 1 else 's' }}
+    </span>
+  </h2></summary>
+
+  <div class="spend-head">
+    <div class="cell"><span>Total tokens</span><b>{{ '{:,}'.format(spend.total_tokens) }}</b></div>
+    <div class="cell"><span>In / out</span><b>{{ '{:,}'.format(spend.input_tokens) }} / {{ '{:,}'.format(spend.output_tokens) }}</b></div>
+    <div class="cell"><span>Model calls</span><b>{{ spend.llm_calls }}</b></div>
+    <div class="cell"><span>Tool calls</span><b>{{ spend.tool_calls }}</b></div>
+  </div>
+
+  {% if spend.tokens_unreported %}
+    <p class="muted" style="margin:0 0 12px; font-size:13px">
+      The provider did not report token usage on these calls, so the counts read
+      zero. The call and tool tallies are still accurate.
+    </p>
+  {% endif %}
+
+  <table class="spend">
+    <thead>
+      <tr><th>Agent</th><th>Tokens</th><th style="width:34%"></th><th>Calls</th><th>Tools</th><th>Time</th></tr>
+    </thead>
+    <tbody>
+      {% for a in spend.agents %}
+        <tr>
+          <td><span class="agent-chip lg">{{ a.actor }}</span>
+            {% if a.failures %}<span class="tag err">{{ a.failures }} failed</span>{% endif %}
+            {% if a.models %}<div class="muted mono" style="font-size:11px; margin-top:3px">{{ a.models|join(', ') }}</div>{% endif %}
+          </td>
+          <td class="mono num">{{ '{:,}'.format(a.tokens) }}<div class="muted" style="font-size:11px">{{ a.pct }}%</div></td>
+          <td><div class="sbar"><span style="width: {{ a.share }}%"></span></div></td>
+          <td class="mono num">{{ a.calls }}</td>
+          <td class="mono num">{{ a.tool_calls or '—' }}</td>
+          <td class="mono num">{{ (a.ms / 1000)|round(1) }}s</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if spend.tools %}
+    <h3 class="sub-h">External calls and access</h3>
+    <p class="muted" style="margin:0 0 10px; font-size:13px">
+      Every system this investigation reached into, and what it was pointed at —
+      the question a security team gets asked about a tool that can touch production.
+    </p>
+    <div class="table-wrap" style="margin:0">
+      <table>
+        <thead><tr><th>Tool</th><th>Calls</th><th>Called by</th><th>Against</th></tr></thead>
+        <tbody>
+        {% for t in spend.tools %}
+          <tr>
+            <td><b class="mono">{{ t.tool }}</b>{% if t.failures %} <span class="tag err">{{ t.failures }} failed</span>{% endif %}</td>
+            <td class="mono num">{{ t.calls }}</td>
+            <td>{% for b in t.by %}<span class="agent-chip">{{ b }}</span>{% endfor %}</td>
+            <td class="mono muted" style="font-size:12px">{{ t.targets|join(' · ') or '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</details>
 {% endif %}
 
 {% if attack.observed %}
