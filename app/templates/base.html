@@ -79,6 +79,19 @@
     white-space: pre-wrap; word-wrap: break-word; background: var(--panel-2);
     border: 1px solid var(--line); border-radius: 8px; padding: 16px; font: inherit; margin: 0;
   }
+  .report.md {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 16px 18px;
+  }
+  .report.md > :first-child { margin-top: 0; }
+  .report.md > :last-child { margin-bottom: 0; }
+  .report.md p { margin: 0 0 10px; max-width: 74ch; }
+  .report.md ul { margin: 0 0 10px; padding-left: 20px; }
+  .report.md li { margin-bottom: 4px; }
+  .report.md code {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 5px; font-family: ui-monospace, monospace; font-size: 12.5px;
+  }
   .timeline { list-style: none; padding: 0; margin: 0; }
   .timeline li { padding: 8px 0 8px 16px; border-left: 2px solid var(--line); margin-left: 6px; }
   .timeline li b { color: var(--accent); }
@@ -118,6 +131,113 @@
   i.key.k-review { background: var(--med); }
   i.key.k-action { background: var(--high); }
   i.key.k-human { background: var(--info); }
+
+  /* ── Pipeline: where the incident is in the graph ── */
+  .pipeline { list-style: none; display: flex; flex-wrap: wrap; gap: 0; padding: 0; margin: 4px 0 0; }
+  .pipeline li { flex: 1 1 108px; min-width: 108px; padding: 0 8px 0 0; position: relative; }
+  /* The connector is drawn on the node row, not behind the whole item, so it
+     never runs through the labels when the strip wraps. */
+  .pipeline li::after {
+    content: ""; position: absolute; left: 12px; right: 4px; top: 5px;
+    height: 2px; background: var(--line);
+  }
+  .pipeline li:last-child::after { display: none; }
+  .pipeline .node {
+    position: relative; z-index: 1; display: block; width: 12px; height: 12px;
+    border-radius: 50%; background: var(--panel); border: 2px solid var(--line);
+  }
+  .pipeline .name { display: block; margin-top: 9px; font-size: 13px; font-weight: 600; }
+  .pipeline .what {
+    display: block; font-size: 11px; color: var(--muted);
+    font-family: ui-monospace, monospace;
+  }
+  .pipeline .done .node { background: var(--ok); border-color: var(--ok); }
+  .pipeline .done::after { background: var(--ok); }
+  .pipeline .active .node { background: var(--accent); border-color: var(--accent); }
+  .pipeline .waiting .node { background: var(--warn); border-color: var(--warn); }
+  .pipeline .waiting .what { color: var(--warn); font-weight: 700; }
+  .pipeline .failed .node { background: var(--err); border-color: var(--err); }
+  .pipeline .failed .what { color: var(--err); }
+  .pipeline .skipped .name, .pipeline .skipped .what { opacity: .45; }
+  .pipeline .pending .name, .pipeline .pending .what { opacity: .55; }
+
+  /* ── ATT&CK ── */
+  .chain-wrap { overflow-x: auto; margin-bottom: 16px; }
+  .chain { list-style: none; display: flex; gap: 4px; padding: 0; margin: 0; min-width: 760px; }
+  /* min-width:0 is load-bearing — without it a flex item refuses to shrink
+     below its longest word, and "COMMAND & CONTROL" pushes all fourteen
+     columns into a horizontal scroll on an otherwise roomy screen. */
+  .chain .tac {
+    flex: 1 1 0; min-width: 0; border-radius: 6px; padding: 8px 6px;
+    background: var(--panel-2); border: 1px solid var(--line); text-align: center;
+  }
+  .chain .tl {
+    display: block; font-size: 9.5px; text-transform: uppercase; letter-spacing: .3px;
+    color: var(--muted); line-height: 1.25; min-height: 36px; overflow-wrap: anywhere;
+  }
+  .chain .tn {
+    display: block; margin-top: 5px; font-weight: 700; font-size: 17px;
+    font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums;
+  }
+  .chain .miss { opacity: .4; }
+  .chain .miss .tn { color: var(--muted); font-weight: 400; }
+  .chain .hit { border-color: var(--accent-dim); }
+  .chain .sev-b-critical, .chain .sev-b-high { border-color: var(--crit); }
+  .chain .sev-b-critical .tn, .chain .sev-b-high .tn { color: var(--crit); }
+  .chain .sev-b-medium { border-color: var(--med); }
+  .chain .sev-b-medium .tn { color: var(--med); }
+  .chain .sev-b-low .tn, .chain .sev-b-informational .tn { color: var(--low); }
+
+  .tech-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(272px, 1fr)); gap: 14px; }
+  .tac-head {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px;
+    color: var(--muted); margin-bottom: 7px; font-weight: 700;
+  }
+  details.tech { background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; margin-bottom: 7px; }
+  details.tech > summary {
+    cursor: pointer; padding: 9px 11px; display: flex; gap: 8px; align-items: baseline;
+    list-style: none;
+  }
+  details.tech > summary::-webkit-details-marker { display: none; }
+  details.tech > summary::before { content: "▸"; color: var(--muted); font-size: 11px; }
+  details.tech[open] > summary::before { content: "▾"; }
+  details.tech .tid { color: var(--accent); font-weight: 700; }
+  details.tech .tname { flex: 1; font-size: 13.5px; }
+  .approx {
+    display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 4px;
+    background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: .5px; vertical-align: 1px;
+    font-family: ui-monospace, monospace;
+  }
+  details.tech .cnt {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+    padding: 0 7px; font-size: 11px; font-family: ui-monospace, monospace; color: var(--muted);
+  }
+  details.tech .tech-body { padding: 0 11px 11px; }
+
+  details.dig { margin-top: 14px; }
+  details.dig > summary {
+    cursor: pointer; color: var(--accent); font-size: 13.5px; font-weight: 600;
+  }
+  ul.plain { list-style: none; padding: 0; margin: 10px 0 0; }
+  ul.plain li { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+  ul.plain li:last-child { border-bottom: none; }
+  .bad { color: var(--err); }
+
+  /* ── Report page ── */
+  .report-head { border-bottom: 2px solid var(--line); padding-bottom: 18px; margin-bottom: 22px; }
+  .report-head h1 { font-size: 26px; margin: 0 0 10px; }
+  .verdict-line { font-size: 19px; font-weight: 700; margin: 0 0 6px; }
+  .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 16px; }
+  .meta { background: var(--panel-2); border-radius: 8px; padding: 11px 13px; }
+  .meta .l { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  .meta .v { font-weight: 600; margin-top: 3px; font-size: 14px; }
+  @media print {
+    header, .no-print { display: none !important; }
+    body { background: #fff; color: #000; }
+    .panel { border-color: #ccc; break-inside: avoid; }
+    main { max-width: none; padding: 0; }
+  }
 </style>
 </head>
 <body>
