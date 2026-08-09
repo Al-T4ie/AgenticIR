@@ -132,34 +132,46 @@
   i.key.k-action { background: var(--high); }
   i.key.k-human { background: var(--info); }
 
-  /* ── Pipeline: where the incident is in the graph ── */
-  .pipeline { list-style: none; display: flex; flex-wrap: wrap; gap: 0; padding: 0; margin: 4px 0 0; }
-  .pipeline li { flex: 1 1 108px; min-width: 108px; padding: 0 8px 0 0; position: relative; }
-  /* The connector is drawn on the node row, not behind the whole item, so it
-     never runs through the labels when the strip wraps. */
-  .pipeline li::after {
-    content: ""; position: absolute; left: 12px; right: 4px; top: 5px;
-    height: 2px; background: var(--line);
+  /* ── Agent graph: the topology, with this incident's state on it ── */
+  .agraph { width: 100%; min-width: 780px; height: auto; display: block; }
+  .agraph text { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 600; }
+  .agraph .gsub { font-size: 10.5px; font-weight: 400; fill: var(--muted); }
+  .agraph .gl { fill: var(--muted); font-size: 10.5px; font-weight: 400; }
+
+  /* One rule per state, applied to the group; the rect and the label both
+     pick it up so a node never half-changes colour. */
+  .agraph .gn rect { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
+  .agraph .gn text { fill: var(--text); }
+  .agraph .gn.done rect     { stroke: var(--ok); }
+  .agraph .gn.active rect   { fill: rgba(91,141,239,.18); stroke: var(--accent); stroke-width: 2.5; }
+  .agraph .gn.waiting rect  { fill: rgba(255,176,32,.16); stroke: var(--warn); stroke-width: 2.5; }
+  .agraph .gn.failed rect   { fill: rgba(255,92,108,.14); stroke: var(--err); stroke-width: 2; }
+  .agraph .gn.failed text   { fill: var(--err); }
+  /* Queued and never-dispatched are different facts: one is still coming, the
+     other was decided against. Both recede, only one keeps its outline. */
+  .agraph .gn.pending rect  { opacity: .5; }
+  .agraph .gn.pending text  { opacity: .5; }
+  .agraph .gn.skipped rect  { opacity: .4; stroke-dasharray: 4 3; }
+  .agraph .gn.skipped text  { opacity: .4; }
+  .agraph .gn.unused rect   { opacity: .35; stroke-dasharray: 4 3; }
+  .agraph .gn.unused text   { opacity: .35; }
+
+  .agraph .ge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+  .agraph .ge.done    { stroke: var(--ok); opacity: .8; }
+  .agraph .ge.active  { stroke: var(--accent); stroke-width: 2; }
+  .agraph .ge.waiting { stroke: var(--warn); stroke-width: 2; }
+  .agraph .ge.failed  { stroke: var(--err); }
+  .agraph .ge.pending, .agraph .ge.skipped, .agraph .ge.unused { opacity: .4; }
+  .agraph .ge.dash { stroke-dasharray: 5 4; }
+
+  .glegend { margin-top: 10px; font-size: 12px; }
+  .gtag {
+    font-family: ui-monospace, monospace; font-size: 11.5px; font-weight: 600;
+    border-radius: 999px; padding: 2px 10px; border: 1px solid var(--line);
   }
-  .pipeline li:last-child::after { display: none; }
-  .pipeline .node {
-    position: relative; z-index: 1; display: block; width: 12px; height: 12px;
-    border-radius: 50%; background: var(--panel); border: 2px solid var(--line);
-  }
-  .pipeline .name { display: block; margin-top: 9px; font-size: 13px; font-weight: 600; }
-  .pipeline .what {
-    display: block; font-size: 11px; color: var(--muted);
-    font-family: ui-monospace, monospace;
-  }
-  .pipeline .done .node { background: var(--ok); border-color: var(--ok); }
-  .pipeline .done::after { background: var(--ok); }
-  .pipeline .active .node { background: var(--accent); border-color: var(--accent); }
-  .pipeline .waiting .node { background: var(--warn); border-color: var(--warn); }
-  .pipeline .waiting .what { color: var(--warn); font-weight: 700; }
-  .pipeline .failed .node { background: var(--err); border-color: var(--err); }
-  .pipeline .failed .what { color: var(--err); }
-  .pipeline .skipped .name, .pipeline .skipped .what { opacity: .45; }
-  .pipeline .pending .name, .pipeline .pending .what { opacity: .55; }
+  .gtag.active  { color: var(--accent); border-color: var(--accent-dim); background: rgba(91,141,239,.12); }
+  .gtag.waiting { color: var(--warn); border-color: var(--warn); background: rgba(255,176,32,.12); }
+  .gtag.failed  { color: var(--err); border-color: var(--err); background: rgba(255,92,108,.12); }
 
   /* ── ATT&CK ── */
   .chain-wrap { overflow-x: auto; margin-bottom: 16px; }
