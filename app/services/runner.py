@@ -281,6 +281,16 @@ async def _ask_open_questions(
         return
     from app.slack import progress
 
+    # Record the ask on the timeline, not only in Slack. `open_questions` holds
+    # what is outstanding *now*, so a question that later got answered vanishes
+    # without trace — and "what did it need to know, and did it find out" is
+    # exactly what someone reading the incident afterwards wants. The timeline
+    # is the only place that keeps both halves.
+    for question in questions:
+        await incidents.append_timeline(
+            incident_id, {"actor": "critic", "event": f"Asked: {question}"}
+        )
+
     await progress.ask_humans(incident_id, questions)
     log.info("runner.asked_humans", incident_id=incident_id, questions=len(questions))
 
