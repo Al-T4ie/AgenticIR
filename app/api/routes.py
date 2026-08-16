@@ -132,6 +132,49 @@ async def poll_now() -> dict[str, Any]:
     return await poller.sweep()
 
 
+@v1.get("/intel", summary="Threat intelligence corpus status")
+async def intel_status() -> dict[str, Any]:
+    """How much the corpus knows and whether its feeds are healthy.
+
+    Worth an endpoint rather than a log line because the failure mode is silent:
+    a corpus whose feeds have been 401ing for a week keeps answering every
+    lookup with "not found", and "not found" is exactly what a working corpus
+    says about a clean indicator. `stale` is the flag that separates them.
+    """
+    from app.services import cti, feeds
+
+    settings = get_settings()
+    if not settings.cti_enabled:
+        return {"enabled": False, "corpus": {"reports": 0, "entities": 0}, "feeds": []}
+
+    size = await cti.corpus_size()
+    health = await cti.feed_health()
+    configured = [
+        {"name": f.name, "layer": f.layer, "description": f.description}
+        for f in feeds.enabled_feeds()
+    ]
+    return {
+        "enabled": True,
+        "corpus": size,
+        "feeds": health,
+        "configured": configured,
+        "failing": [f["name"] for f in health if f["consecutive_failures"] > 0],
+        # An empty corpus cannot answer anything, and a lookup against it is
+        # not evidence of a clean indicator.
+        "stale": size["reports"] == 0 or not any(f["items_ingested"] for f in health),
+    }
+
+
+@v1.post("/intel/refresh", summary="Pull the threat intelligence feeds now")
+async def intel_refresh() -> dict[str, Any]:
+    """Run every enabled feed immediately instead of waiting for the caretaker."""
+    from app.services import feeds
+
+    if not get_settings().cti_enabled:
+        raise HTTPException(status_code=400, detail="CTI_ENABLED is false")
+    return await feeds.refresh()
+
+
 router.include_router(v1)
 
 

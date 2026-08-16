@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import UTC, datetime
 
 from app.config import get_settings
 from app.observability import UPKEEP_ACTIONS, get_logger
@@ -112,6 +113,41 @@ async def post_digests() -> int:
     return posted
 
 
+async def refresh_intel() -> int:
+    """Pull the threat intelligence feeds, if enough time has passed.
+
+    Driven off the same tick as everything else rather than its own timer: the
+    caretaker already survives restarts, and a corpus refresh that only happens
+    when a process has been up for six hours is a corpus that never refreshes on
+    a service that deploys twice a day.
+    """
+    settings = get_settings()
+    if not settings.cti_enabled:
+        return 0
+
+    from app.services import cti, feeds
+
+    due = settings.cti_refresh_hours * 3600
+    for feed in feeds.enabled_feeds():
+        state = await cti.feed_state(feed.name)
+        last = state.get("last_ok_at") or ""
+        if last:
+            try:
+                elapsed = (datetime.now(UTC) - datetime.fromisoformat(str(last))).total_seconds()
+            except ValueError:
+                elapsed = due
+            if elapsed < due:
+                continue
+        result = await feeds.run_feed(feed)
+        UPKEEP_ACTIONS.labels(action="intel_refresh").inc()
+        if result.get("ok"):
+            return int(result.get("ingested") or 0)
+        # One feed per tick. A cold start with three feeds fills the corpus over
+        # three minutes instead of blocking one tick on every provider at once.
+        return 0
+    return 0
+
+
 async def _say(record: dict[str, object], text: str) -> None:
     """Tell the incident's channel something. Never raises."""
     if not get_settings().slack_enabled:
@@ -134,8 +170,12 @@ async def _say(record: dict[str, object], text: str) -> None:
 
 async def sweep() -> dict[str, int]:
     """One caretaker pass. Each duty is isolated — neither can suppress the other."""
-    result = {"withdrawn": 0, "digests": 0}
-    for key, duty in (("withdrawn", replan_stale_gates), ("digests", post_digests)):
+    result = {"withdrawn": 0, "digests": 0, "intel": 0}
+    for key, duty in (
+        ("withdrawn", replan_stale_gates),
+        ("digests", post_digests),
+        ("intel", refresh_intel),
+    ):
         try:
             result[key] = await duty()
         except Exception as exc:  # noqa: BLE001 — the caretaker outlives its duties

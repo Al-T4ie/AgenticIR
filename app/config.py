@@ -147,6 +147,22 @@ class Settings(BaseSettings):
     # now. Zero disables the behaviour and lets plans wait indefinitely.
     stale_gate_seconds: int = 1800
 
+    # ── Threat intelligence corpus ──
+    # A local corpus, refreshed on a schedule, that specialists query during an
+    # investigation. Without it `check_indicator` answers "unknown" to
+    # everything — which is honest, and useless.
+    cti_enabled: bool = True
+    # Comma-separated feed names; blank runs every feed that has its credential.
+    # See app/services/feeds.py for what is available.
+    cti_feeds: str = ""
+    cti_refresh_hours: int = 6
+    # Indicators last reported longer ago than this are not ingested. A corpus
+    # that remembers everything answers "have we seen this" with archaeology.
+    cti_retention_days: int = 365
+    # Free, from auth.abuse.ch. Without it ThreatFox and URLhaus are skipped —
+    # CISA KEV needs no key and runs regardless.
+    abusech_api_key: str = ""
+
     # ── n8n ──
     n8n_enabled: bool = False
     n8n_base_url: str = "http://n8n:5678"

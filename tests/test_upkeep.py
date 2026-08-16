@@ -20,6 +20,8 @@ from app.services import incidents, runner, upkeep
 
 def _settings(**overrides: Any) -> SimpleNamespace:
     base = {
+        "cti_enabled": False,
+        "cti_refresh_hours": 6,
         "stale_gate_seconds": 1800,
         "ir_digest_seconds": 600,
         "slack_enabled": False,
@@ -333,7 +335,82 @@ async def test_one_failing_duty_does_not_take_out_the_other(
     caretaker["due"] = [{"id": "INC-1"}]
 
     result = await upkeep.sweep()
-    assert result == {"withdrawn": 0, "digests": 1}
+    assert result["withdrawn"] == 0, "the failing duty contributes nothing"
+    assert result["digests"] == 1, "and the other one still ran"
+
+
+# ── Keeping the corpus fed ───────────────────────────────────────────────────
+@pytest.fixture
+def intel(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "settings": _settings(cti_enabled=True, cti_refresh_hours=6),
+        "feeds": [SimpleNamespace(name="cisa-kev")],
+        "last_ok": "",
+        "ran": [],
+        "result": {"ok": True, "ingested": 12},
+    }
+
+    async def _state(name: str) -> dict[str, Any]:  # noqa: ARG001
+        return {"last_ok_at": state["last_ok"]}
+
+    async def _run(feed: Any, **_kw: Any) -> dict[str, Any]:
+        state["ran"].append(feed.name)
+        return state["result"]
+
+    from app.services import cti as cti_mod
+    from app.services import feeds as feeds_mod
+
+    monkeypatch.setattr(upkeep, "get_settings", lambda: state["settings"])
+    monkeypatch.setattr(cti_mod, "feed_state", _state)
+    monkeypatch.setattr(feeds_mod, "enabled_feeds", lambda: state["feeds"])
+    monkeypatch.setattr(feeds_mod, "run_feed", _run)
+    return state
+
+
+async def test_a_feed_never_run_is_pulled_immediately(intel: dict[str, Any]) -> None:
+    assert await upkeep.refresh_intel() == 12
+    assert intel["ran"] == ["cisa-kev"]
+
+
+async def test_a_recently_pulled_feed_is_left_alone(intel: dict[str, Any]) -> None:
+    intel["last_ok"] = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    assert await upkeep.refresh_intel() == 0
+    assert intel["ran"] == []
+
+
+async def test_a_feed_past_its_interval_is_pulled_again(intel: dict[str, Any]) -> None:
+    intel["last_ok"] = (datetime.now(UTC) - timedelta(hours=9)).isoformat()
+    assert await upkeep.refresh_intel() == 12
+    assert intel["ran"] == ["cisa-kev"]
+
+
+async def test_an_unparseable_timestamp_triggers_a_refresh_rather_than_blocking_one(
+    intel: dict[str, Any],
+) -> None:
+    """Failing closed here would mean one corrupt row silently stops the corpus
+    being fed, and the symptom is every lookup answering 'not found'."""
+    intel["last_ok"] = "not a timestamp"
+    assert await upkeep.refresh_intel() == 12
+
+
+async def test_only_one_feed_is_pulled_per_tick(intel: dict[str, Any]) -> None:
+    """A cold start with three feeds fills the corpus over three ticks rather
+    than blocking one on every provider at once."""
+    intel["feeds"] = [SimpleNamespace(name="a"), SimpleNamespace(name="b")]
+    await upkeep.refresh_intel()
+    assert intel["ran"] == ["a"]
+
+
+async def test_intel_refresh_is_skipped_when_cti_is_off(intel: dict[str, Any]) -> None:
+    intel["settings"] = _settings(cti_enabled=False)
+    assert await upkeep.refresh_intel() == 0
+    assert intel["ran"] == []
+
+
+async def test_a_failed_feed_does_not_report_ingested_items(intel: dict[str, Any]) -> None:
+    intel["result"] = {"ok": False, "error": "401", "ingested": 0}
+    assert await upkeep.refresh_intel() == 0
+    assert intel["ran"] == ["cisa-kev"], "it still tried"
 
 
 async def test_the_caretaker_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:

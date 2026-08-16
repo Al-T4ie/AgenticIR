@@ -13,6 +13,7 @@ from typing import Any, TypedDict
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel, Field, field_validator
 
+from app.config import get_settings
 from app.graph import llm, prompts
 from app.graph.llm import coerce_json_list
 from app.graph.nodes.intake import now_iso
@@ -20,6 +21,7 @@ from app.observability import ACTIVE_SPECIALISTS, NODE_DURATION, concise_error, 
 from app.services import ledger
 from app.slack import progress
 from app.tools.builtin import builtin_tools
+from app.tools.cti import cti_tools
 from app.tools.n8n import n8n_tools
 
 log = get_logger(__name__)
@@ -90,7 +92,13 @@ def _best(findings: list[ReportedFinding]) -> list[ReportedFinding]:
 
 
 def _tools() -> list:
-    return [*builtin_tools(), *n8n_tools()]
+    """Everything a specialist may call.
+
+    Order matters where names collide: n8n comes last, so an operator who
+    registers a workflow under a built-in name deliberately overrides it.
+    """
+    intel = cti_tools() if get_settings().cti_enabled else []
+    return [*builtin_tools(), *intel, *n8n_tools()]
 
 
 async def _run_tool_loop(system: str, task: str, incident_id: str) -> list:
